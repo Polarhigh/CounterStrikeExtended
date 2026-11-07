@@ -3,7 +3,7 @@
 #if defined( SW_RENDERER )
 #include "igame.h"
 #include "const.h"
-#include "../external/sdl2/SDL.h"
+#include <SDL3/SDL.h>
 
 class CGame : public IGame
 {
@@ -31,6 +31,7 @@ public:
 	void AppActivate( bool active );
 
 private:
+    void UpdateWindowMetrics();
 	bool			m_bActiveApp;
 	SDL_Window*		m_hSDLWindow;
 	SDL_GLContext	m_hSDLGLContext;
@@ -56,7 +57,7 @@ extern CGame g_Game;
 
 #include "igame.h"
 #include "const.h"
-#include "../external/sdl2/SDL.h"
+#include <SDL3/SDL.h>
 
 class CGame : public IGame
 {
@@ -85,6 +86,7 @@ public:
 	void AppActivate( bool fActive );
 
 private:
+    void UpdateWindowMetrics();
 #if defined( _WIN32 )
 	bool m_bActiveApp;
 	SDL_Window* m_hSDLWindow;

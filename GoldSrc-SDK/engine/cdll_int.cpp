@@ -1,3 +1,4 @@
+#include "../common/sdl3_input.h"
 #include "engine_apiproxy.h"
 #include "client.h"
 #include "common.h"
@@ -29,16 +30,17 @@
 #include "interface.h"
 #include "ivideomode.h"
 #include "enginecallbacks.h"
-#include "../external/sdl2/SDL.h"
+#include <SDL3/SDL.h>
 #include "../common/event_flags.h"
 #include "../common/entity_types.h"
 #include "../common/triangleapi.h"
 #include "../common/event_api.h"
 #include "../common/demo_api.h"
 #include "../common/r_studioint.h"
-
 #include <cstdlib>
+
 #include <cstring>
+#include "sdl3_window.h"
 #if !defined( _WIN32 )
 #include <dlfcn.h>
 #endif
@@ -1002,50 +1004,23 @@ void hudPlaybackEvent( int flags, const edict_t* pInvoker, unsigned short eventi
 		CL_DemoEvent( flags, eventindex, delay, &args );
 }
 
-static void SDL_AdjustMousePosition( int* x, int* y )
-{
-	int windowWidth, windowHeight;
-	int videoWidth, videoHeight;
-	int xOffset, yOffset;
-
-	if ( VideoMode_IsWindowed() )
-		return;
-
-	SDL_GetWindowSize( *pmainwindow, &windowWidth, &windowHeight );
-	VideoMode_GetCurrentVideoMode( &videoWidth, &videoHeight, NULL );
-
-	*x = (int)( (float)videoWidth / (float)windowWidth * (float)*x );
-	*y = (int)( (float)videoHeight / (float)windowHeight * (float)*y );
-
-	xOffset = *x - videoWidth / 2;
-	*x = (int)( *x + ( GetXMouseAspectRatioAdjustment() - 1.0 ) * (float)xOffset );
-
-	yOffset = *y - videoHeight / 2;
-	*y = (int)( *y + ( GetYMouseAspectRatioAdjustment() - 1.0 ) * (float)yOffset );
+void hudGetMousePosition(int *mx, int *my) {
+    g_engdstAddrs.GetMousePosition(&mx, &my);
+    cse::GetEngineMousePosition(*pmainwindow, mx, my);
 }
 
-void hudGetMousePosition( int* mx, int* my )
-{
-	g_engdstAddrs.GetMousePosition( &mx, &my );
-	SDL_GetMouseState( mx, my );
-	SDL_AdjustMousePosition( mx, my );
+void SDL_GetMousePos(POINT *ppt) {
+    int *x, *y;
+
+    g_engdstAddrs.pfnGetMousePos(&ppt);
+
+    x = (int *)&ppt->x;
+    y = (int *)&ppt->y;
+    cse::GetEngineMousePosition(*pmainwindow, x, y);
 }
 
-void SDL_GetMousePos( POINT* ppt )
-{
-	int *x, *y;
-
-	g_engdstAddrs.pfnGetMousePos( &ppt );
-
-	x = (int*)&ppt->x;
-	y = (int*)&ppt->y;
-	SDL_GetMouseState( x, y );
-	SDL_AdjustMousePosition( x, y );
-}
-
-void SDL_SetMousePos( int x, int y )
-{
-	SDL_WarpMouseInWindow( *pmainwindow, x, y );
+void SDL_SetMousePos(int x, int y) {
+    cse::WarpEngineMousePosition(*pmainwindow, x, y);
 }
 
 cl_enginefunc_t cl_enginefuncs =

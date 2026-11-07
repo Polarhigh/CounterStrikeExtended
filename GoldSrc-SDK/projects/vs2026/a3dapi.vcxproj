@@ -88,14 +88,19 @@
     <ClCompile Include="..\..\a3dapi\A3d3.cpp" />
     <ClCompile Include="..\..\a3dapi\a3d_guids.cpp" />
     <ClCompile Include="..\..\a3dapi\resman.cpp" />
-    <ClCompile Include="..\..\a3dapi\dal_a2d.cpp" />
-    <ClCompile Include="..\..\a3dapi\dalinfo.cpp" />
+    <ClCompile Include="..\..\a3dapi\dal_a2d.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="..\..\a3dapi\dalinfo.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
     <ClCompile Include="..\..\a3dapi\A3dGeom.cpp">
       <EnableEnhancedInstructionSet>NoExtensions</EnableEnhancedInstructionSet>
       <FloatingPointModel>Precise</FloatingPointModel>
       <PreprocessorDefinitions>A3D_GEOMETRY_CORE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="..\..\a3dapi\A3dScene.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
       <EnableEnhancedInstructionSet>NoExtensions</EnableEnhancedInstructionSet>
       <FloatingPointModel>Precise</FloatingPointModel>
     </ClCompile>
@@ -145,6 +150,7 @@
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
     <ClCompile Include="..\..\a3dapi\rotation.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
       <Optimization>MaxSpeed</Optimization>
       <BasicRuntimeChecks Condition="'$(Configuration)'=='Debug'">Default</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>

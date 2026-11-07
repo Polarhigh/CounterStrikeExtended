@@ -5,7 +5,7 @@
 #include "ivideomode.h"
 #include "vgui_int.h"
 #include "vgui_intwrap2.h"
-#include "../external/sdl2/SDL.h"
+#include <SDL3/SDL.h>
 
 #include <VGUI_App.h>
 #include <VGUI_Panel.h>
@@ -45,22 +45,23 @@ void CDummyApp::platTick()
 {
 }
 
-void VGuiWrap_SetRootPanelSize()
-{
-	int x = 0, y = 0;
-	int wide, tall;
+void VGuiWrap_SetRootPanelSize() {
+    int x = 0, y = 0;
+    int wide, tall;
 
-	g_engdstAddrs.VGui_GetPanel();
-	if ( !staticPanel )
-		return;
+    g_engdstAddrs.VGui_GetPanel();
+    if (!staticPanel) {
+        return;
+    }
 
-	SDL_GetWindowPosition( *pmainwindow, &x, &y );
-	if ( VideoMode_IsWindowed() )
-		SDL_GetWindowSize( *pmainwindow, &wide, &tall );
-	else
-		VideoMode_GetCurrentVideoMode( &wide, &tall, NULL );
+    SDL_GetWindowPosition(*pmainwindow, &x, &y);
+    if (VideoMode_IsWindowed()) {
+        SDL_GetWindowSizeInPixels(*pmainwindow, &wide, &tall);
+    } else {
+        VideoMode_GetCurrentVideoMode(&wide, &tall, NULL);
+    }
 
-	staticPanel->setBounds( x, y, wide, tall );
+    staticPanel->setBounds(x, y, wide, tall);
 }
 
 void VGuiWrap_Shutdown()

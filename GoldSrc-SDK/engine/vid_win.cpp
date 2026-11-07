@@ -7,7 +7,7 @@
 #include "sys.h"
 #include "filesystem.h"
 
-#include "../external/sdl2/SDL.h"
+#include <SDL3/SDL.h>
 
 #include <windows.h>
 #include <cstdio>
@@ -173,26 +173,22 @@ void VID_WriteBuffer( const char* pFilename )
 	filenumber++;
 }
 
-extern "C" void VID_UpdateWindowVars( RECT* rect, int x, int y )
-{
-	if ( pmainwindow )
-	{
-		int width, height;
-		int left, top;
+extern "C" void VID_UpdateWindowVars(RECT *rect, int x, int y) {
+    if (pmainwindow) {
+        int width, height;
+        int left, top;
 
-		SDL_GetWindowSize( *pmainwindow, &width, &height );
-		SDL_GetWindowPosition( *pmainwindow, &left, &top );
-		rect->left = left;
-		rect->right = left + width;
-		rect->top = top;
-		rect->bottom = top + height;
-		window_center_x = left + width / 2;
-		window_center_y = top + height / 2;
-	}
-	else
-	{
-		window_center_x = x;
-		window_center_y = y;
-	}
-	window_rect = *rect;
+        SDL_GetWindowSizeInPixels(*pmainwindow, &width, &height);
+        SDL_GetWindowPosition(*pmainwindow, &left, &top);
+        rect->left = left;
+        rect->right = left + width;
+        rect->top = top;
+        rect->bottom = top + height;
+        window_center_x = left + width / 2;
+        window_center_y = top + height / 2;
+    } else {
+        window_center_x = x;
+        window_center_y = y;
+    }
+    window_rect = *rect;
 }

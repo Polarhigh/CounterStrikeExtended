@@ -1,3 +1,5 @@
+#include "../../common/sdl3_input.h"
+#include "../../common/sdl3_cursor.h"
 #include "BaseUISurface.h"
 #include "../keys.h"
 #include "../vgui/IPanel.h"
@@ -15,18 +17,19 @@
 #include "../vgui/Cursor.h"
 #include "../common.h"
 #include "../cvar.h"
-#include "../../external/sdl2/SDL.h"
+#include <SDL3/SDL.h>
 #include "../filesystem.h"
 #include "../ivideomode.h"
 #include "../vid.h"
 #include "../../vgui2/controls/controls.h"
 #include "engine_apiproxy.h"
 #include "cdll_int.h"
-
 #include "../glquake.h"
 
 #include <cstring>
+
 #include <cstdlib>
+#include "../sdl3_window.h"
 
 #if !defined( _WIN32 )
 #include <fontconfig/fontconfig.h>
@@ -54,6 +57,7 @@ SDL_Keycode GetSDLKeycodeFromEngineKey( int keynum );
 
 vgui2::IInputInternal* g_InputInternal;
 
+static cse::FractionalMotion s_wheelMotion;
 static SDL_Cursor* staticDefaultCursor[MAX_DEFAULT_CURSORS];
 static SDL_Cursor* staticCurrentCursor;
 static bool s_bCursorVisible = true;
@@ -69,148 +73,125 @@ vgui2::IInputInternal* inputinternal()
 	return g_InputInternal;
 }
 
-static void CheckModState()
-{
-	struct ModifierKey_t
-	{
-		SDL_Keymod modifier;
-		vgui2::KeyCode key;
-	};
+static void CheckModState() {
+    struct ModifierKey_t {
+        SDL_Keymod modifier;
+        vgui2::KeyCode key;
+    };
 
-	static const ModifierKey_t modifierKeys[] = {
-		{ KMOD_LSHIFT, vgui2::KEY_LSHIFT },
-		{ KMOD_LALT, vgui2::KEY_LALT },
-		{ KMOD_LCTRL, vgui2::KEY_LCONTROL },
-		{ KMOD_RSHIFT, vgui2::KEY_LSHIFT },
-		{ KMOD_RALT, vgui2::KEY_RALT },
-		{ KMOD_RCTRL, vgui2::KEY_RCONTROL },
-		{ KMOD_CAPS, vgui2::KEY_CAPSLOCK },
-		{ KMOD_LGUI, vgui2::KEY_LWIN },
-		{ KMOD_RGUI, vgui2::KEY_RWIN },
-	};
-	static Uint32 s_lastModifierCode;
+    static const ModifierKey_t modifierKeys[] = {
+        {SDL_KMOD_LSHIFT, vgui2::KEY_LSHIFT}, {SDL_KMOD_LALT, vgui2::KEY_LALT}, {SDL_KMOD_LCTRL, vgui2::KEY_LCONTROL},
+        {SDL_KMOD_RSHIFT, vgui2::KEY_LSHIFT}, {SDL_KMOD_RALT, vgui2::KEY_RALT}, {SDL_KMOD_RCTRL, vgui2::KEY_RCONTROL},
+        {SDL_KMOD_CAPS, vgui2::KEY_CAPSLOCK}, {SDL_KMOD_LGUI, vgui2::KEY_LWIN}, {SDL_KMOD_RGUI, vgui2::KEY_RWIN},
+    };
+    static Uint32 s_lastModifierCode;
 
-	Uint32 changed = s_lastModifierCode ^ SDL_GetModState();
-	for ( const ModifierKey_t& mod : modifierKeys )
-	{
-		if ( !( changed & mod.modifier ) )
-			continue;
+    Uint32 changed = s_lastModifierCode ^ SDL_GetModState();
+    for (const ModifierKey_t &mod : modifierKeys) {
+        if (!(changed & mod.modifier)) {
+            continue;
+        }
 
-		if ( s_lastModifierCode & mod.modifier )
-		{
-			g_InputInternal->InternalKeyCodeReleased( mod.key );
-		}
-		else
-		{
-			g_InputInternal->InternalKeyCodePressed( mod.key );
-			g_InputInternal->InternalKeyCodeTyped( mod.key );
-		}
-	}
-	s_lastModifierCode = SDL_GetModState();
+        if (s_lastModifierCode & mod.modifier) {
+            g_InputInternal->InternalKeyCodeReleased(mod.key);
+        } else {
+            g_InputInternal->InternalKeyCodePressed(mod.key);
+            g_InputInternal->InternalKeyCodeTyped(mod.key);
+        }
+    }
+    s_lastModifierCode = SDL_GetModState();
 }
 
-void BaseUISurface::AppHandler( void* event, void* )
-{
-	SDL_Event ev = *(const SDL_Event*)event;
-	switch ( ev.type )
-	{
-	case SDL_KEYDOWN:
-		g_InputInternal->InternalKeyCodePressed( KeyCode_VirtualKeyToVGUI( ev.key.keysym.sym ) );
-		g_InputInternal->InternalKeyCodeTyped( KeyCode_VirtualKeyToVGUI( ev.key.keysym.sym ) );
-		CheckModState();
-		break;
-	case SDL_KEYUP:
-		g_InputInternal->InternalKeyCodeReleased( KeyCode_VirtualKeyToVGUI( ev.key.keysym.sym ) );
-		CheckModState();
-		break;
-	case SDL_TEXTINPUT:
-		for ( unsigned int i = 0; i < sizeof( ev.text.text ) && ev.text.text[i]; )
-		{
-			uchar32 ch;
-			bool error;
-			int bytes = Q_UTF8ToUChar32( &ev.text.text[i], ch, error );
-			if ( error )
-				break;
-			g_InputInternal->InternalKeyTyped( (wchar_t)ch );
-			i += bytes;
-		}
-		break;
-	case SDL_MOUSEMOTION:
-		if ( VideoMode_IsWindowed() )
-		{
-			g_InputInternal->InternalCursorMoved( ev.motion.x, ev.motion.y );
-		}
-		else
-		{
-			int windowWide, windowTall;
-			int videoWide, videoTall;
-			SDL_GetWindowSize( (SDL_Window*)game->GetMainWindow(), &windowWide, &windowTall );
-			VideoMode_GetCurrentVideoMode( &videoWide, &videoTall, NULL );
+void BaseUISurface::AppHandler(void *event, void *) {
+    SDL_Event ev = *(const SDL_Event *)event;
+    switch (ev.type) {
+    case SDL_EVENT_KEY_DOWN:
+        g_InputInternal->InternalKeyCodePressed(KeyCode_VirtualKeyToVGUI(ev.key.key));
+        g_InputInternal->InternalKeyCodeTyped(KeyCode_VirtualKeyToVGUI(ev.key.key));
+        CheckModState();
+        break;
+    case SDL_EVENT_KEY_UP:
+        g_InputInternal->InternalKeyCodeReleased(KeyCode_VirtualKeyToVGUI(ev.key.key));
+        CheckModState();
+        break;
+    case SDL_EVENT_TEXT_INPUT:
+        for (unsigned int i = 0; ev.text.text && ev.text.text[i];) {
+            uchar32 ch;
+            bool error;
+            int bytes = Q_UTF8ToUChar32(&ev.text.text[i], ch, error);
+            if (error) {
+                break;
+            }
+#if defined(_WIN32)
+            const cse::Utf16Character units = cse::EncodeUtf16(ch);
+            g_InputInternal->InternalKeyTyped(static_cast<wchar_t>(units.first));
+            if (units.count == 2) {
+                g_InputInternal->InternalKeyTyped(static_cast<wchar_t>(units.second));
+            }
+#else
+            g_InputInternal->InternalKeyTyped(static_cast<wchar_t>(ch));
+#endif
+            i += bytes;
+        }
+        break;
+    case SDL_EVENT_MOUSE_MOTION: {
+        int x = 0;
+        int y = 0;
+        cse::WindowToEngineMousePosition((SDL_Window *)game->GetMainWindow(), ev.motion.x, ev.motion.y, x, y);
+        g_InputInternal->InternalCursorMoved(x, y);
+    }
+        m_deltax += ev.motion.xrel;
+        m_deltay += ev.motion.yrel;
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        vgui2::MouseCode button = vgui2::MOUSE_LEFT;
+        switch (ev.button.button) {
+        case SDL_BUTTON_LEFT:
+            button = vgui2::MOUSE_LEFT;
+            break;
+        case SDL_BUTTON_MIDDLE:
+            button = vgui2::MOUSE_MIDDLE;
+            break;
+        case SDL_BUTTON_RIGHT:
+            button = vgui2::MOUSE_RIGHT;
+            break;
+        case SDL_BUTTON_X1:
+        case MOUSE_BUTTON_EXTRA_3:
+        case MOUSE_BUTTON_EXTRA_5:
+            button = vgui2::MOUSE_4;
+            break;
+        case SDL_BUTTON_X2:
+        case MOUSE_BUTTON_EXTRA_4:
+        case MOUSE_BUTTON_EXTRA_6:
+            button = vgui2::MOUSE_5;
+            break;
+        }
 
-			int scaledX = (int)( ( (float)videoWide / windowWide ) * ev.motion.x );
-			int scaledY = (int)( ( (float)videoTall / windowTall ) * ev.motion.y );
-			int x = (int)( ( GetXMouseAspectRatioAdjustment() - 1.0 ) * (float)( scaledX - videoWide / 2 ) + scaledX );
-			int y = (int)( ( GetYMouseAspectRatioAdjustment() - 1.0 ) * (float)( scaledY - videoTall / 2 ) + scaledY );
-			g_InputInternal->InternalCursorMoved( x, y );
-		}
-		m_deltax += ev.motion.xrel;
-		m_deltay += ev.motion.yrel;
-		break;
-	case SDL_MOUSEBUTTONDOWN:
-	case SDL_MOUSEBUTTONUP:
-	{
-		vgui2::MouseCode button = vgui2::MOUSE_LEFT;
-		switch ( ev.button.button )
-		{
-		case SDL_BUTTON_LEFT:
-			button = vgui2::MOUSE_LEFT;
-			break;
-		case SDL_BUTTON_MIDDLE:
-			button = vgui2::MOUSE_MIDDLE;
-			break;
-		case SDL_BUTTON_RIGHT:
-			button = vgui2::MOUSE_RIGHT;
-			break;
-		case SDL_BUTTON_X1:
-		case MOUSE_BUTTON_EXTRA_3:
-		case MOUSE_BUTTON_EXTRA_5:
-			button = vgui2::MOUSE_4;
-			break;
-		case SDL_BUTTON_X2:
-		case MOUSE_BUTTON_EXTRA_4:
-		case MOUSE_BUTTON_EXTRA_6:
-			button = vgui2::MOUSE_5;
-			break;
-		}
+        if (ev.type != SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            g_InputInternal->InternalMouseReleased(button);
+            break;
+        }
 
-		if ( ev.type != SDL_MOUSEBUTTONDOWN )
-		{
-			g_InputInternal->InternalMouseReleased( button );
-			break;
-		}
-
-		if ( m_bGotMouseButtonDown
-			 && sdl_double_click_time.value >= (float)(int)( ev.button.timestamp - m_MouseButtonDownTimeStamp )
-			 && sdl_double_click_size.value >= (float)abs( ev.button.x - m_MouseButtonDownX )
-			 && sdl_double_click_size.value >= (float)abs( ev.button.y - m_MouseButtonDownY ) )
-		{
-			m_bGotMouseButtonDown = false;
-			g_InputInternal->InternalMouseDoublePressed( button );
-		}
-		else
-		{
-			m_MouseButtonDownTimeStamp = ev.button.timestamp;
-			m_MouseButtonDownX = ev.button.x;
-			m_MouseButtonDownY = ev.button.y;
-			m_bGotMouseButtonDown = true;
-			g_InputInternal->InternalMousePressed( button );
-		}
-		break;
-	}
-	case SDL_MOUSEWHEEL:
-		g_InputInternal->InternalMouseWheeled( ev.wheel.y );
-		break;
-	}
+        if (m_bGotMouseButtonDown &&
+            cse::WithinDoubleClickTime(m_MouseButtonDownTimeStamp, ev.button.timestamp, sdl_double_click_time.value) &&
+            sdl_double_click_size.value >= std::fabs(ev.button.x - m_MouseButtonDownX) &&
+            sdl_double_click_size.value >= std::fabs(ev.button.y - m_MouseButtonDownY)) {
+            m_bGotMouseButtonDown = false;
+            g_InputInternal->InternalMouseDoublePressed(button);
+        } else {
+            m_MouseButtonDownTimeStamp = ev.button.timestamp;
+            m_MouseButtonDownX = ev.button.x;
+            m_MouseButtonDownY = ev.button.y;
+            m_bGotMouseButtonDown = true;
+            g_InputInternal->InternalMousePressed(button);
+        }
+        break;
+    }
+    case SDL_EVENT_MOUSE_WHEEL:
+        g_InputInternal->InternalMouseWheeled(cse::WheelSteps(s_wheelMotion, ev.wheel.y, ev.wheel.direction));
+        break;
+    }
 }
 
 bool BaseUISurface::DeleteTextureByID( int texture )
@@ -225,12 +206,11 @@ bool BaseUISurface::DeleteTextureByID( int texture )
 #endif
 }
 
-void BaseUISurface::GetMouseDelta( int* x, int* y )
-{
-	*x = m_deltax;
-	*y = m_deltay;
-	m_deltay = 0;
-	m_deltax = 0;
+void BaseUISurface::GetMouseDelta(int *x, int *y) {
+    *x = static_cast<int>(m_deltax);
+    *y = static_cast<int>(m_deltay);
+    m_deltax -= static_cast<float>(*x);
+    m_deltay -= static_cast<float>(*y);
 }
 
 bool BaseUISurface::SupportsFeature( SurfaceFeature_e feature )
@@ -251,54 +231,48 @@ bool BaseUISurface::SupportsFeature( SurfaceFeature_e feature )
 #endif
 }
 
-void BaseUISurface::CalculateMouseVisible()
-{
-	if ( m_bIgnoreMouseVisCalc )
-		return;
+void BaseUISurface::CalculateMouseVisible() {
+    if (m_bIgnoreMouseVisCalc) {
+        return;
+    }
 
-	_needMouse = false;
-	_needKB = false;
-	for ( int i = 0; i < vgui2::surface()->GetPopupCount(); i++ )
-	{
-		VPANEL panel = vgui2::surface()->GetPopup( i );
-		bool visible = vgui2::ipanel()->IsVisible( panel );
-		VPANEL parent = vgui2::ipanel()->GetParent( panel );
-		while ( parent && visible )
-		{
-			if ( !vgui2::ipanel()->IsVisible( parent ) )
-			{
-				visible = false;
-				break;
-			}
-			parent = vgui2::ipanel()->GetParent( parent );
-		}
+    _needMouse = false;
+    _needKB = false;
+    for (int i = 0; i < vgui2::surface()->GetPopupCount(); i++) {
+        VPANEL panel = vgui2::surface()->GetPopup(i);
+        bool visible = vgui2::ipanel()->IsVisible(panel);
+        VPANEL parent = vgui2::ipanel()->GetParent(panel);
+        while (parent && visible) {
+            if (!vgui2::ipanel()->IsVisible(parent)) {
+                visible = false;
+                break;
+            }
+            parent = vgui2::ipanel()->GetParent(parent);
+        }
 
-		if ( visible )
-		{
-			_needMouse |= vgui2::ipanel()->IsMouseInputEnabled( panel );
-			_needKB |= vgui2::ipanel()->IsKeyBoardInputEnabled( panel );
-		}
-	}
+        if (visible) {
+            _needMouse |= vgui2::ipanel()->IsMouseInputEnabled(panel);
+            _needKB |= vgui2::ipanel()->IsKeyBoardInputEnabled(panel);
+        }
+    }
 
-	UnlockCursor();
-	if ( _needMouse )
-	{
-		SetCursor( vgui2::dc_arrow );
-		return;
-	}
+    UnlockCursor();
+    if (_needMouse) {
+        SetCursor(vgui2::dc_arrow);
+        return;
+    }
 
-	SetCursor( vgui2::dc_none );
-	LockCursor();
-	if ( !m_rawinput.value && BUsesSDLInput() )
-	{
-		int wide, tall;
-		SDL_GetWindowSize( (SDL_Window*)game->GetMainWindow(), &wide, &tall );
-		SDL_WarpMouseInWindow( (SDL_Window*)game->GetMainWindow(), wide / 2, tall / 2 );
+    SetCursor(vgui2::dc_none);
+    LockCursor();
+    if (!m_rawinput.value && BUsesSDLInput()) {
+        int wide, tall;
+        SDL_GetWindowSize((SDL_Window *)game->GetMainWindow(), &wide, &tall);
+        SDL_WarpMouseInWindow((SDL_Window *)game->GetMainWindow(), static_cast<float>(wide / 2),
+                              static_cast<float>(tall / 2));
 
-		SDL_PumpEvents();
-		int dx, dy;
-		SDL_GetRelativeMouseState( &dx, &dy );
-	}
+        SDL_PumpEvents();
+        SDL_GetRelativeMouseState(nullptr, nullptr);
+    }
 }
 
 void BaseUISurface::PlaySound( const char* filename )
@@ -333,29 +307,29 @@ void BaseUISurface::SetScreenBounds( int x, int y, int width, int height )
 #pragma warning( suppress: 26495 )
 #endif
 BaseUISurface::BaseUISurface()
-	: _restrictedPanel( 0 ), m_hCurrentFont( 0 ), m_iCurrentTexture( 0 ), m_pChromeController( NULL ),
-	  _cursorLocked( false ), _proportionalBaseWidth( 640 ), _proportionalBaseHeight( 480 ), _needMouse( true ),
-	  _needKB( true ), m_bVGUI2MouseControl( false ), m_bFullScreen( false ), m_bSupportsEsc( false ), m_deltax( 0 ),
-	  m_deltay( 0 ), _proportionalBaseWidth_HD( 1280 ), _proportionalBaseHeight_HD( 720 )
-{
-	m_bTranslateExtendedKeys = true;
-	if ( !SDL_WasInit( SDL_INIT_VIDEO ) )
-		SDL_InitSubSystem( SDL_INIT_VIDEO );
+    : _restrictedPanel(0), m_hCurrentFont(0), m_iCurrentTexture(0), m_pChromeController(NULL), _cursorLocked(false),
+      _proportionalBaseWidth(640), _proportionalBaseHeight(480), _needMouse(true), _needKB(true),
+      m_bVGUI2MouseControl(false), m_bFullScreen(false), m_bSupportsEsc(false), m_deltax(0), m_deltay(0),
+      _proportionalBaseWidth_HD(1280), _proportionalBaseHeight_HD(720) {
+    m_bTranslateExtendedKeys = true;
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
+        SDL_InitSubSystem(SDL_INIT_VIDEO);
+    }
 
-	staticDefaultCursor[vgui2::dc_none] = NULL;
-	staticDefaultCursor[vgui2::dc_arrow] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_ARROW );
-	staticDefaultCursor[vgui2::dc_ibeam] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_IBEAM );
-	staticDefaultCursor[vgui2::dc_hourglass] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_WAIT );
-	staticDefaultCursor[vgui2::dc_crosshair] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_CROSSHAIR );
-	staticDefaultCursor[vgui2::dc_up] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZENS );
-	staticDefaultCursor[vgui2::dc_sizenwse] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZENWSE );
-	staticDefaultCursor[vgui2::dc_sizenesw] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZENESW );
-	staticDefaultCursor[vgui2::dc_sizewe] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZEWE );
-	staticDefaultCursor[vgui2::dc_sizens] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZENS );
-	staticDefaultCursor[vgui2::dc_sizeall] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_SIZEALL );
-	staticDefaultCursor[vgui2::dc_no] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_NO );
-	staticDefaultCursor[vgui2::dc_hand] = SDL_CreateSystemCursor( SDL_SYSTEM_CURSOR_HAND );
-	staticCurrentCursor = staticDefaultCursor[vgui2::dc_arrow];
+    staticDefaultCursor[vgui2::dc_none] = NULL;
+    staticDefaultCursor[vgui2::dc_arrow] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
+    staticDefaultCursor[vgui2::dc_ibeam] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_TEXT);
+    staticDefaultCursor[vgui2::dc_hourglass] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_WAIT);
+    staticDefaultCursor[vgui2::dc_crosshair] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+    staticDefaultCursor[vgui2::dc_up] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
+    staticDefaultCursor[vgui2::dc_sizenwse] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NWSE_RESIZE);
+    staticDefaultCursor[vgui2::dc_sizenesw] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NESW_RESIZE);
+    staticDefaultCursor[vgui2::dc_sizewe] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
+    staticDefaultCursor[vgui2::dc_sizens] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
+    staticDefaultCursor[vgui2::dc_sizeall] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_MOVE);
+    staticDefaultCursor[vgui2::dc_no] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NOT_ALLOWED);
+    staticDefaultCursor[vgui2::dc_hand] = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_POINTER);
+    staticCurrentCursor = staticDefaultCursor[vgui2::dc_arrow];
 }
 
 BaseUISurface g_BaseUISurface;
@@ -387,136 +361,82 @@ void BaseUISurface::Init( VPANEL embeddedPanel, IEngineSurface* engineSurface, I
 	}
 }
 
-void BaseUISurface::Shutdown()
-{
-	if ( m_pChromeController )
-		m_pChromeController->Shutdown();
+void BaseUISurface::Shutdown() {
+    if (m_pChromeController) {
+        m_pChromeController->Shutdown();
+    }
 
-#if defined( _WIN32 )
-	for ( int i = 0; i < m_CustomFontFileNames.Count(); i++ )
-		RemoveFontResourceExA( m_CustomFontFileNames[i].String(), FR_PRIVATE, NULL );
+#if defined(_WIN32)
+    for (int i = 0; i < m_CustomFontFileNames.Count(); i++) {
+        RemoveFontResourceExA(m_CustomFontFileNames[i].String(), FR_PRIVATE, NULL);
+    }
 #endif
-	m_CustomFontFileNames.RemoveAll();
+    m_CustomFontFileNames.RemoveAll();
 
-	for ( int i = 0; i < MAX_DEFAULT_CURSORS; i++ )
-	{
-		if ( staticDefaultCursor[i] )
-			SDL_FreeCursor( staticDefaultCursor[i] );
-	}
-	staticPopupList.RemoveAll();
+    for (int i = 0; i < MAX_DEFAULT_CURSORS; i++) {
+        if (staticDefaultCursor[i]) {
+            SDL_DestroyCursor(staticDefaultCursor[i]);
+        }
+    }
+    staticPopupList.RemoveAll();
 }
 
-void BaseUISurface::SurfaceGetCursorPos( int& x, int& y )
-{
-	SDL_GetMouseState( &x, &y );
-	if ( VideoMode_IsWindowed() )
-		return;
-
-	int windowWide, windowTall;
-	int videoWide, videoTall;
-	SDL_GetWindowSize( (SDL_Window*)game->GetMainWindow(), &windowWide, &windowTall );
-	VideoMode_GetCurrentVideoMode( &videoWide, &videoTall, NULL );
-
-	x = (int)( ( (float)videoWide / windowWide ) * x );
-	y = (int)( ( (float)videoTall / windowTall ) * y );
-	x = (int)( x + ( GetXMouseAspectRatioAdjustment() - 1.0 ) * (float)( x - videoWide / 2 ) );
-	y = (int)( y + ( GetYMouseAspectRatioAdjustment() - 1.0 ) * (float)( y - videoTall / 2 ) );
+void BaseUISurface::SurfaceGetCursorPos(int &x, int &y) {
+    cse::GetEngineMousePosition((SDL_Window *)game->GetMainWindow(), &x, &y);
 }
 
-void BaseUISurface::SurfaceSetCursorPos( int x, int y )
-{
-	if ( !VideoMode_IsWindowed() )
-	{
-		int windowWide, windowTall;
-		int videoWide, videoTall;
-		SDL_GetWindowSize( (SDL_Window*)game->GetMainWindow(), &windowWide, &windowTall );
-		VideoMode_GetCurrentVideoMode( &videoWide, &videoTall, NULL );
-
-		int scaledX = (int)( ( (float)videoWide / windowWide ) * x );
-		int scaledY = (int)( ( (float)videoTall / windowTall ) * y );
-		x = (int)( ( GetXMouseAspectRatioAdjustment() - 1.0 ) * (float)( scaledX - videoWide / 2 ) + scaledX );
-		y = (int)( ( GetYMouseAspectRatioAdjustment() - 1.0 ) * (float)( scaledY - videoTall / 2 ) + scaledY );
-	}
-
-	SDL_WarpMouseInWindow( (SDL_Window*)game->GetMainWindow(), x, y );
+void BaseUISurface::SurfaceSetCursorPos(int x, int y) {
+    cse::WarpEngineMousePosition((SDL_Window *)game->GetMainWindow(), x, y);
 }
 
-void BaseUISurface::SetCursor( vgui2::HCursor cursor )
-{
-	_currentCursor = cursor;
-	if ( _cursorLocked )
-		return;
+void BaseUISurface::SetCursor(vgui2::HCursor cursor) {
+    _currentCursor = cursor;
+    if (_cursorLocked) {
+        return;
+    }
 
-	bool wasVisible = s_bCursorVisible;
-	s_bCursorVisible = true;
-	switch ( cursor )
-	{
-	case vgui2::dc_user:
-		s_bCursorVisible = false;
-		staticCurrentCursor = NULL;
-		break;
-	case vgui2::dc_none:
-		s_bCursorVisible = false;
-		staticCurrentCursor = staticDefaultCursor[cursor];
-		break;
-	case vgui2::dc_arrow:
-	case vgui2::dc_ibeam:
-	case vgui2::dc_hourglass:
-	case vgui2::dc_crosshair:
-	case vgui2::dc_up:
-	case vgui2::dc_sizenwse:
-	case vgui2::dc_sizenesw:
-	case vgui2::dc_sizewe:
-	case vgui2::dc_sizens:
-	case vgui2::dc_sizeall:
-	case vgui2::dc_no:
-	case vgui2::dc_hand:
-		staticCurrentCursor = staticDefaultCursor[cursor];
-		[[fallthrough]];
-	default:
-		SDL_SetCursor( staticCurrentCursor );
-		break;
-	}
+    bool wasVisible = s_bCursorVisible;
+    s_bCursorVisible = true;
+    switch (cursor) {
+    case vgui2::dc_user:
+        s_bCursorVisible = false;
+        staticCurrentCursor = NULL;
+        break;
+    case vgui2::dc_none:
+        s_bCursorVisible = false;
+        staticCurrentCursor = staticDefaultCursor[cursor];
+        break;
+    case vgui2::dc_arrow:
+    case vgui2::dc_ibeam:
+    case vgui2::dc_hourglass:
+    case vgui2::dc_crosshair:
+    case vgui2::dc_up:
+    case vgui2::dc_sizenwse:
+    case vgui2::dc_sizenesw:
+    case vgui2::dc_sizewe:
+    case vgui2::dc_sizens:
+    case vgui2::dc_sizeall:
+    case vgui2::dc_no:
+    case vgui2::dc_hand:
+        staticCurrentCursor = staticDefaultCursor[cursor];
+        [[fallthrough]];
+    default:
+        SDL_SetCursor(staticCurrentCursor);
+        break;
+    }
 
-	bool useRawInput = m_rawinput.value && BUsesSDLInput();
-	if ( s_bUsedRawInputLast != useRawInput )
-	{
-		if ( wasVisible )
-			SDL_SetRelativeMouseMode( SDL_FALSE );
-		else
-			SDL_ShowCursor( SDL_ENABLE );
-		s_bUsedRawInputLast = useRawInput;
-	}
-
-	if ( wasVisible && !s_bCursorVisible )
-	{
-		if ( useRawInput )
-			SDL_SetRelativeMouseMode( SDL_TRUE );
-		else
-			SDL_ShowCursor( SDL_DISABLE );
-		if ( cl_mousegrab.value )
-			SDL_SetWindowGrab( (SDL_Window*)game->GetMainWindow(), SDL_TRUE );
-
-		SDL_PumpEvents();
-		int dx, dy;
-		SDL_GetRelativeMouseState( &dx, &dy );
-		game->SetCursorVisible( s_bCursorVisible );
-	}
-
-	if ( !wasVisible && s_bCursorVisible )
-	{
-		if ( useRawInput )
-			SDL_SetRelativeMouseMode( SDL_FALSE );
-		else
-			SDL_ShowCursor( SDL_ENABLE );
-		if ( cl_mousegrab.value )
-			SDL_SetWindowGrab( (SDL_Window*)game->GetMainWindow(), SDL_FALSE );
-
-		SDL_PumpEvents();
-		int dx, dy;
-		SDL_GetRelativeMouseState( &dx, &dy );
-		game->SetCursorVisible( s_bCursorVisible );
-	}
+    const bool useRawInput = m_rawinput.value && BUsesSDLInput();
+    SDL_Window *window = (SDL_Window *)game->GetMainWindow();
+    if (cse::CursorRequestChanged(wasVisible, s_bCursorVisible, s_bUsedRawInputLast, useRawInput)) {
+        cse::ApplyCursorVisibility(window, s_bCursorVisible, useRawInput);
+        SDL_SetWindowMouseGrab(window, !s_bCursorVisible && cl_mousegrab.value != 0.0f);
+        SDL_PumpEvents();
+        SDL_GetRelativeMouseState(nullptr, nullptr);
+        m_deltax = 0.0f;
+        m_deltay = 0.0f;
+        game->SetCursorVisible(s_bCursorVisible);
+    }
+    s_bUsedRawInputLast = useRawInput;
 }
 
 bool BaseUISurface::m_bTranslateExtendedKeys = true;

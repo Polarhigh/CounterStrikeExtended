@@ -1,6 +1,8 @@
+#include "../../common/sdl3_input.h"
+static cse::FractionalMotion s_relativeMotion;
 //========= Copyright © 1996-2002, Valve LLC, All rights reserved. ============
 //
-// Purpose: 
+// Purpose:
 //
 // $NoKeywords: $
 //=============================================================================
@@ -22,8 +24,8 @@
 #include "Exports.h"
 #include "vgui/ISurface.h"
 
-#include <SDL2/SDL_mouse.h>
-#include <SDL2/SDL_gamecontroller.h>
+#include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_gamepad.h>
 
 #define MOUSE_BUTTON_COUNT 5
 
@@ -81,7 +83,7 @@ DWORD pdwRawValue[JOY_MAX_AXES];
 DWORD joy_oldbuttonstate, joy_oldpovstate;
 int joy_id;
 DWORD joy_numbuttons;
-SDL_GameController* s_pJoystick;
+SDL_Gamepad *s_pJoystick;
 int joy_avail, joy_advancedinit, joy_haspov;
 
 // none of these cvars are saved over a session
@@ -109,30 +111,29 @@ void Force_CenterView_f()
 	}
 }
 
-void CL_DLLEXPORT IN_ActivateMouse()
-{
-	if ( mouseinitialized )
-	{
-		if ( mouseparmsvalid )
-			restore_spi = SystemParametersInfo( SPI_SETMOUSE, 0, newmouseparms, 0 );
-		mouseactive = 1;
-	}
+void CL_DLLEXPORT IN_ActivateMouse() {
+    if (mouseinitialized) {
+        if (mouseparmsvalid) {
+            restore_spi = SystemParametersInfo(SPI_SETMOUSE, 0, newmouseparms, 0);
+        }
+        s_relativeMotion.Reset();
+        mouseactive = 1;
+    }
 }
-
 
 /*
 ===========
 IN_DeactivateMouse
 ===========
 */
-void CL_DLLEXPORT IN_DeactivateMouse()
-{
-	if ( mouseinitialized )
-	{
-		if ( restore_spi )
-			SystemParametersInfo( SPI_SETMOUSE, 0, originalmouseparms, 0 );
-		mouseactive = 0;
-	}
+void CL_DLLEXPORT IN_DeactivateMouse() {
+    if (mouseinitialized) {
+        if (restore_spi) {
+            SystemParametersInfo(SPI_SETMOUSE, 0, originalmouseparms, 0);
+        }
+        s_relativeMotion.Reset();
+        mouseactive = 0;
+    }
 }
 
 /*
@@ -165,9 +166,14 @@ void IN_StartupMouse()
 	mouse_buttons = MOUSE_BUTTON_COUNT;
 }
 
-void IN_Shutdown()
-{
-	IN_DeactivateMouse();
+void IN_Shutdown() {
+    if (s_pJoystick) {
+        SDL_CloseGamepad(s_pJoystick);
+        s_pJoystick = nullptr;
+    }
+    joy_avail = 0;
+    s_relativeMotion.Reset();
+    IN_DeactivateMouse();
 }
 
 /*
@@ -205,8 +211,8 @@ void CL_DLLEXPORT IN_MouseEvent( int mstate )
 //-----------------------------------------------------------------------------
 // Purpose: Allows modulation of mouse scaling/senstivity value and application
 //  of custom algorithms.
-// Input  : *x - 
-//			*y - 
+// Input  : *x -
+//			*y -
 //-----------------------------------------------------------------------------
 void IN_ScaleMouse( float* x, float* y )
 {
@@ -245,134 +251,132 @@ void IN_ScaleMouse( float* x, float* y )
 	}
 }
 
-void IN_MouseMove( float, usercmd_t* cmd )
-{
-	vec3_t viewangles;
-	gEngfuncs.GetViewAngles( viewangles );
-	if ( in_mlook.state & 1 )
-		V_StopPitchDrift();
-	if ( !iMouseInUse && !gHUD.m_iIntermission && !vgui2::surface()->IsCursorVisible() )
-	{
-		int deltaX, deltaY;
-		SDL_GetRelativeMouseState( &deltaX, &deltaY );
-		current_pos.x = deltaX;
-		current_pos.y = deltaY;
-		int mx = deltaX + mx_accum;
-		int my = deltaY + my_accum;
-		mx_accum = 0;
-		my_accum = 0;
-		if ( m_filter->value )
-		{
-			mouse_x = ( mx + old_mouse_x ) * 0.5;
-			mouse_y = ( my + old_mouse_y ) * 0.5;
-		}
-		else
-		{
-			mouse_x = mx;
-			mouse_y = my;
-		}
-		old_mouse_x = mx;
-		old_mouse_y = my;
+void IN_MouseMove(float, usercmd_t *cmd) {
+    vec3_t viewangles;
+    gEngfuncs.GetViewAngles(viewangles);
+    if (in_mlook.state & 1) {
+        V_StopPitchDrift();
+    }
+    if (!iMouseInUse && !gHUD.m_iIntermission && !vgui2::surface()->IsCursorVisible()) {
+        int deltaX, deltaY;
+        cse::ReadRelativeMotion(s_relativeMotion, &deltaX, &deltaY);
+        current_pos.x = deltaX;
+        current_pos.y = deltaY;
+        int mx = deltaX + mx_accum;
+        int my = deltaY + my_accum;
+        mx_accum = 0;
+        my_accum = 0;
+        if (m_filter->value) {
+            mouse_x = (mx + old_mouse_x) * 0.5;
+            mouse_y = (my + old_mouse_y) * 0.5;
+        } else {
+            mouse_x = mx;
+            mouse_y = my;
+        }
+        old_mouse_x = mx;
+        old_mouse_y = my;
 
-		// Apply custom mouse scaling/acceleration
-		IN_ScaleMouse( &mouse_x, &mouse_y );
+        // Apply custom mouse scaling/acceleration
+        IN_ScaleMouse(&mouse_x, &mouse_y);
 
-		// add mouse X/Y movement to cmd
-		if ( ( in_strafe.state & 1 ) || ( lookstrafe->value && ( in_mlook.state & 1 ) ) )
-			cmd->sidemove += m_side->value * mouse_x;
-		else
-			viewangles[YAW] -= m_yaw->value * mouse_x;
-		if ( ( in_mlook.state & 1 ) && !( in_strafe.state & 1 ) )
-		{
-			viewangles[PITCH] += m_pitch->value * mouse_y;
-			if ( viewangles[PITCH] > cl_pitchdown->value )
-				viewangles[PITCH] = cl_pitchdown->value;
-			if ( viewangles[PITCH] < -cl_pitchup->value )
-				viewangles[PITCH] = -cl_pitchup->value;
-		}
-		else if ( ( in_strafe.state & 1 ) && gEngfuncs.IsNoClipping() )
-		{
-			cmd->upmove -= m_forward->value * mouse_y;
-		}
-		else
-		{
-			cmd->forwardmove -= m_forward->value * mouse_y;
-		}
-	}
-	gEngfuncs.SetViewAngles( viewangles );
+        // add mouse X/Y movement to cmd
+        if ((in_strafe.state & 1) || (lookstrafe->value && (in_mlook.state & 1))) {
+            cmd->sidemove += m_side->value * mouse_x;
+        } else {
+            viewangles[YAW] -= m_yaw->value * mouse_x;
+        }
+        if ((in_mlook.state & 1) && !(in_strafe.state & 1)) {
+            viewangles[PITCH] += m_pitch->value * mouse_y;
+            if (viewangles[PITCH] > cl_pitchdown->value) {
+                viewangles[PITCH] = cl_pitchdown->value;
+            }
+            if (viewangles[PITCH] < -cl_pitchup->value) {
+                viewangles[PITCH] = -cl_pitchup->value;
+            }
+        } else if ((in_strafe.state & 1) && gEngfuncs.IsNoClipping()) {
+            cmd->upmove -= m_forward->value * mouse_y;
+        } else {
+            cmd->forwardmove -= m_forward->value * mouse_y;
+        }
+    }
+    gEngfuncs.SetViewAngles(viewangles);
 }
 
-void CL_DLLEXPORT IN_Accumulate()
-{
-	if ( !iMouseInUse && !vgui2::surface()->IsCursorVisible() && mouseactive )
-	{
-		int deltaX, deltaY;
-		SDL_GetRelativeMouseState( &deltaX, &deltaY );
-		mx_accum += deltaX;
-		my_accum += deltaY;
-		// force the mouse to the center, so there's room to move
-		IN_ResetMouse();
-	}
+void CL_DLLEXPORT IN_Accumulate() {
+    if (!iMouseInUse && !vgui2::surface()->IsCursorVisible() && mouseactive) {
+        int deltaX, deltaY;
+        cse::ReadRelativeMotion(s_relativeMotion, &deltaX, &deltaY);
+        mx_accum += deltaX;
+        my_accum += deltaY;
+        // force the mouse to the center, so there's room to move
+        IN_ResetMouse();
+    }
 }
 
-void CL_DLLEXPORT IN_ClearStates()
-{
-	if ( !mouseactive )
-		return;
-	mx_accum = 0;
-	my_accum = 0;
-	mouse_oldbuttonstate = 0;
+void CL_DLLEXPORT IN_ClearStates() {
+    s_relativeMotion.Reset();
+    if (!mouseactive) {
+        return;
+    }
+    mx_accum = 0;
+    my_accum = 0;
+    mouse_oldbuttonstate = 0;
 }
 
-void IN_StartupJoystick()
-{
-	// abort startup if user requests no joystick
-	if ( gEngfuncs.CheckParm( "-nojoy", NULL ) )
-		return;
-	joy_avail = 0;
-	int count = SDL_NumJoysticks();
-	if ( count <= 0 )
-	{
-		gEngfuncs.Con_DPrintf( "joystick not found -- driver not present\n\n" );
-		return;
-	}
-	for ( int i = 0; i < count; i++ )
-	{
-		if ( SDL_IsGameController( i ) )
-		{
-			s_pJoystick = SDL_GameControllerOpen( i );
-			if ( s_pJoystick )
-			{
-				joy_numbuttons = JOY_BUTTON_COUNT;
-				joy_haspov = 0;
-
-				// old button and POV states default to no buttons pressed
-				joy_oldbuttonstate = joy_oldpovstate = 0;
-
-				// mark the joystick as available and advanced initialization not completed
-				// this is needed as cvars are not available during initialization
-				gEngfuncs.Con_Printf( "joystick found\n\n", SDL_GameControllerName( s_pJoystick ) );
-				joy_avail = 1;
-				joy_advancedinit = 0;
-				break;
-			}
-		}
-	}
+void IN_StartupJoystick() {
+    if (gEngfuncs.CheckParm("-nojoy", nullptr)) {
+        return;
+    }
+    if (s_pJoystick && !SDL_GamepadConnected(s_pJoystick)) {
+        for (int button = 0; button < JOY_BUTTON_COUNT; ++button) {
+            if (joy_oldbuttonstate & (1u << button)) {
+                gEngfuncs.Key_Event((button < 4 ? K_JOY1 : K_AUX1) + button, 0);
+            }
+        }
+        SDL_CloseGamepad(s_pJoystick);
+        s_pJoystick = nullptr;
+        joy_oldbuttonstate = 0;
+        joy_avail = 0;
+    }
+    if (s_pJoystick) {
+        return;
+    }
+    constexpr double rescanSeconds = 1.0;
+    static double lastCheck = -rescanSeconds;
+    const double now = gEngfuncs.GetAbsoluteTime();
+    if (now >= lastCheck && now - lastCheck < rescanSeconds) {
+        return;
+    }
+    lastCheck = now;
+    int count = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&count);
+    for (int index = 0; index < count; ++index) {
+        s_pJoystick = SDL_OpenGamepad(ids[index]);
+        if (s_pJoystick) {
+            joy_numbuttons = JOY_BUTTON_COUNT;
+            joy_haspov = 0;
+            joy_oldbuttonstate = 0;
+            joy_oldpovstate = 0;
+            joy_avail = 1;
+            joy_advancedinit = 0;
+            gEngfuncs.Con_Printf("joystick found %s\n\n", SDL_GetGamepadName(s_pJoystick));
+            break;
+        }
+    }
+    SDL_free(ids);
 }
 
-DWORD RawValuePointer( int axis )
-{
-	switch ( axis )
-	{
-	case JOY_AXIS_Y:
-		return SDL_GameControllerGetAxis( s_pJoystick, SDL_CONTROLLER_AXIS_LEFTY );
-	case JOY_AXIS_Z:
-		return SDL_GameControllerGetAxis( s_pJoystick, SDL_CONTROLLER_AXIS_RIGHTX );
-	case JOY_AXIS_R:
-		return SDL_GameControllerGetAxis( s_pJoystick, SDL_CONTROLLER_AXIS_RIGHTY );
-	default:
-		return SDL_GameControllerGetAxis( s_pJoystick, SDL_CONTROLLER_AXIS_LEFTX );
-	}
+DWORD RawValuePointer(int axis) {
+    switch (axis) {
+    case JOY_AXIS_Y:
+        return SDL_GetGamepadAxis(s_pJoystick, SDL_GAMEPAD_AXIS_LEFTY);
+    case JOY_AXIS_Z:
+        return SDL_GetGamepadAxis(s_pJoystick, SDL_GAMEPAD_AXIS_RIGHTX);
+    case JOY_AXIS_R:
+        return SDL_GetGamepadAxis(s_pJoystick, SDL_GAMEPAD_AXIS_RIGHTY);
+    default:
+        return SDL_GetGamepadAxis(s_pJoystick, SDL_GAMEPAD_AXIS_LEFTX);
+    }
 }
 
 void Joy_AdvancedUpdate_f()
@@ -418,44 +422,44 @@ void Joy_AdvancedUpdate_f()
 	}
 }
 
-void IN_Commands()
-{
-	if ( !joy_avail )
-		return;
-	DWORD buttonstate = 0;
-	for ( int i = 0; i < JOY_BUTTON_COUNT; i++ )
-	{
-		if ( SDL_GameControllerGetButton( s_pJoystick, (SDL_GameControllerButton)i ) )
-			buttonstate |= 1 << i;
-	}
-	for ( int i = 0; i < JOY_MAX_AXES; i++ )
-		pdwRawValue[i] = RawValuePointer( i );
-	for ( int i = 0; i < (int)joy_numbuttons; i++ )
-	{
-		int key = ( i < 4 ? K_JOY1 : K_AUX1 ) + i;
-		if ( ( buttonstate & ( 1 << i ) ) && !( joy_oldbuttonstate & ( 1 << i ) ) )
-			gEngfuncs.Key_Event( key, 1 );
-		if ( !( buttonstate & ( 1 << i ) ) && ( joy_oldbuttonstate & ( 1 << i ) ) )
-			gEngfuncs.Key_Event( key, 0 );
-	}
-	joy_oldbuttonstate = buttonstate;
-	if ( joy_haspov )
-	{
-		for ( int i = 0; i < 4; i++ )
-		{
-			if ( joy_oldpovstate & ( 1 << i ) )
-				gEngfuncs.Key_Event( K_AUX29 + i, 0 );
-		}
-		joy_oldpovstate = 0;
-	}
+void IN_Commands() {
+    IN_StartupJoystick();
+    if (!joy_avail) {
+        return;
+    }
+    DWORD buttonstate = 0;
+    for (int i = 0; i < JOY_BUTTON_COUNT; i++) {
+        if (SDL_GetGamepadButton(s_pJoystick, cse::LegacyGamepadButton(i))) {
+            buttonstate |= 1 << i;
+        }
+    }
+    for (int i = 0; i < JOY_MAX_AXES; i++) {
+        pdwRawValue[i] = RawValuePointer(i);
+    }
+    for (int i = 0; i < (int)joy_numbuttons; i++) {
+        int key = (i < 4 ? K_JOY1 : K_AUX1) + i;
+        if ((buttonstate & (1 << i)) && !(joy_oldbuttonstate & (1 << i))) {
+            gEngfuncs.Key_Event(key, 1);
+        }
+        if (!(buttonstate & (1 << i)) && (joy_oldbuttonstate & (1 << i))) {
+            gEngfuncs.Key_Event(key, 0);
+        }
+    }
+    joy_oldbuttonstate = buttonstate;
+    if (joy_haspov) {
+        for (int i = 0; i < 4; i++) {
+            if (joy_oldpovstate & (1 << i)) {
+                gEngfuncs.Key_Event(K_AUX29 + i, 0);
+            }
+        }
+        joy_oldpovstate = 0;
+    }
 }
 
-int IN_ReadJoystick()
-{
-	SDL_JoystickUpdate();
-	return 1;
+int IN_ReadJoystick() {
+    SDL_UpdateJoysticks();
+    return 1;
 }
-
 
 /*
 ===========
