@@ -106,7 +106,8 @@ include order, forced headers, exclusions, export names/ordinals and resources.
 steps; [source corrections](source-corrections.md) records C1–C4.
 
 Native SDL3 is pinned and staged for the five linker consumers: both engines,
-both game clients and GameUI. Miles integration remains intact. Steam, browser,
+both game clients and GameUI. Both engines also build/stage the shared mpg123
+decoder; music uses SDL3 streams and no longer requires Miles. Steam, browser,
 voice and optional legacy modules also have runtime loading paths; static
 project references are not the complete module graph. Provider availability in
 the qualified SDL3 package does not establish redistribution rights; see
@@ -116,12 +117,11 @@ The inherited dedicated configuration defines `SW_RENDERER` without explicitly
 defining `SWDS_DLL`; shared source has separate `SWDS_DLL` branches. Its export
 file declares `LIBRARY sw`, and the project suppresses the resulting linker
 warning 4070 while producing `swds.dll`. These settings remain unchanged by
-pruning. The dedicated results below do not establish every conditional path.
+pruning. The dedicated validation does not establish every conditional path.
 
 ## Verification scope
 
-[SDL3 migration validation](sdl3-migration-validation.md) records Windows x86
-builds, exercised runtime paths and coverage limits for its pinned snapshot.
-The subsequent residual-game cleanup has source-selection, header-closure and
-generation checks recorded in [source-pruning.md](source-pruning.md); Windows
-compilation and runtime qualification have not been repeated for that cleanup.
+[Current validation](mpg123-migration-validation.md) covers post-cleanup builds,
+libmpg123 music, CS/HL gameplay and dedicated-server checks on VM1.
+[SDL3 validation](sdl3-migration-validation.md) retains the earlier comparison and
+benchmarks; [source pruning](source-pruning.md) records removal/header-closure checks.

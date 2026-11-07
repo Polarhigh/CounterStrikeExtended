@@ -99,7 +99,7 @@ python tools/qualification/audit_sdl3.py --output overlay-inventory.json invento
 ```
 
 Review the inventory and write a decisions JSON object with `providers` (relative
-paths of licensed required providers to retain, including Miles/Steam/codecs) and
+paths of licensed required providers to retain, including Steam/codecs) and
 `excluded` (relative paths mapped to a concrete reason). The source-built output
 at an identical path automatically replaces a stock artifact. Every other native
 artifact needs an explicit choice; no wildcard deletion or automatic provider
@@ -107,7 +107,7 @@ purge is performed. An example of the schema, **not a complete provider list**:
 
 ```json
 {
-  "providers": ["mss32.dll", "steam_api.dll"],
+  "providers": ["steam_api.dll"],
   "excluded": {
     "SDL2.dll": "Replaced by pinned native SDL3; no current consumer imports SDL2",
     "sw.dll": "Stock software engine alternative outside this OpenGL qualification fixture"
@@ -116,7 +116,7 @@ purge is performed. An example of the schema, **not a complete provider list**:
 ```
 
 Excluding a stock alternative is a declared fixture limitation, not evidence that
-its feature was migrated. Retain all required Miles/Steam/voice/video providers;
+its feature was migrated. Retain all required Steam/voice/video providers;
 a missing or SDL2-dependent required feature must be rebuilt/replaced within its
 authorized boundary, or reported as a failed/incomplete case. Dynamic provider
 requirements need the runtime behavioral matrix and live-module evidence as well.
@@ -150,12 +150,17 @@ python tools/qualification/audit_sdl3.py --output sandbox-audit.json runtime C:\
 
 The `runtime` audit works with Python's standard library on Windows; no LLVM or
 provider execution is required. Runtime module snapshots and provider hashes must
-still confirm the actual loaded set. Production Windows audio remains native
-DirectSound/WaveOut/Miles; `tests/sdl3/audio_stream_tests.cpp` uses a native SDL3
-dummy device solely to qualify retained stream ownership/pause/cursor boundaries,
-without claiming a native Linux/macOS runtime test.
+still confirm the actual loaded set. Windows effects use DirectSound/WaveOut;
+music uses libmpg123/SDL3. `tests/sdl3/audio_stream_tests.cpp` checks retained
+platform-stream ownership/pause/cursor behavior with SDL's dummy device.
+Use the [music checks](#music-migration-closure) for the current music backend.
 
 ## Paired fixed-demo VM benchmark
+
+This tool reproduces the pinned SDL2/SDL3 comparison in the
+[SDL3 report](../../docs/sdl3-migration-validation.md#release-benchmarks).
+It requires matching non-SDL providers, so it cannot compare the current mpg123
+runtime against a Miles baseline without changing the provider comparison.
 
 `invoke_paired_benchmark.ps1` consumes **already staged, qualified, owned** baseline
 and candidate sandboxes. Use fresh directories: copy the reviewed SDL3-only fixture
@@ -230,3 +235,33 @@ sparse OpenGL/ComposedCopy GPU-GDI events are excluded from engine pacing claims
 the earlier SDL/OpenGL microbenchmark is separate API evidence. Renderer screenshots
 and live provider inventories belong in separate gameplay qualification runs to
 avoid screenshot/hash IO during the benchmark.
+
+## Music migration closure
+
+Prepare the isolated fixture above with explicit exclusions for `Mss32.dll`,
+`mssmp3.asi`, `mssvoice.asi` and `binkawin.asi`. Stage the complete runtime,
+source-built `mpg123.dll` and required CRT providers, then run:
+
+```powershell
+python tools/qualification/audit_mpg123.py C:\qualification\music-fixture --output music-closure.json
+```
+
+This checks SDL3/formal import closure, rejects Miles modules/imports and requires
+both engines to import the staged mpg123 provider. See [build instructions](../../docs/building.md#source-built-mp3-decoder)
+for decoder/player/worker tests and [VM1 validation](../../docs/mpg123-migration-validation.md)
+for measured results and coverage limits.
+
+`invoke_music_probe.ps1` runs a one-second upstream sweep loop, pause/resume,
+quarter volume, fade, an existing Half-Life music file, file replacement and stop.
+After auditing, mark the owned sandbox with `.cse-music-fixture` and copy upstream
+`src/tests/sweep.mp3` to `<game>/media/cse-music-test.mp3`. Supply `-Game`,
+`-SandboxDirectory`, `-EvidenceDirectory`, `-NAudioAssembly` (test-only NAudio 1.10)
+and `-ModuleCollectorPath`. The probe mutes effects, timestamps capture buffers and
+records the loaded decoder identity. Analyze the resulting `<game>-<label>` prefix:
+
+```powershell
+python tools/qualification/analyze_music_probe.py C:\evidence\valve-music --output C:\evidence\valve-music-analysis.json
+```
+
+The analysis checks amplitudes, silence phases and replacement identity. Use the
+separate gameplay probe for movement, recording/replay and clean exit.

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <cstddef>
+
 #define CD_REMAP_TRACKS 100
 
 class ICDAudio
@@ -22,6 +25,7 @@ public:
 class CCDAudio : public ICDAudio
 {
 public:
+    static constexpr std::size_t TrackPathCapacity = 512;
 	static const float TRACK_EXTRA_TIME;
 
 	struct _MP3_AUDIO_STATE
@@ -29,7 +33,7 @@ public:
 		bool inuse;
 		bool suspended;
 		bool playing;
-		char trackname[512];
+		char trackname[TrackPathCapacity];
 		int tracknum;
 		bool looping;
 		float volume;
@@ -66,16 +70,18 @@ public:
 	float MP3_SetVolume( float newVolume );
 	bool MP3_InitStream( int trackNum, bool looping );
 	bool MP3_InitStream( const char* filename, bool looping );
-	void MP3_PlayTrackFinalize( int trackNum, bool looping );
+	bool MP3_PlayTrackFinalize( int trackNum, bool looping );
 	bool MP3_PlayTrack( const char* filename, bool looping );
 	bool MP3_PlayTrack( int trackNum, bool looping );
-	void MP3_StartStream();
+	bool MP3_StartStream();
 	void MP3_StopStream();
 	void MP3_Loop();
 	void MP3_SetPause( bool onOff );
 
 	void _Init( int, int );
 	void _Play( int track, int looping );
+    void _PlayFile(const char *filename, int looping);
+    void _PrimeFile(const char *filename, int looping);
 	void _Pause( int, int );
 	void _Resume( int, int );
 	void _Stop( int, int );
@@ -102,13 +108,13 @@ public:
 	bool m_bEnabled;
 	bool m_bIsLooping;
 	bool m_bIsPrimed;
-	bool m_bIsInMiddleOfPriming;
+	std::atomic<bool> m_bIsInMiddleOfPriming;
 
 	float m_flVolume;
 	float m_flMP3Volume;
 
 	int m_nPlayTrack;
-	char m_szPendingPlayFilename[512];
+	char m_szPendingPlayFilename[TrackPathCapacity];
 	int m_nMaxCDTrack;
 	bool m_bResumeOnSwitch;
 	unsigned int m_uiDeviceID;
