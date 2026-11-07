@@ -2,12 +2,13 @@
 
 CounterStrikeExtended retains Counter-Strike 1.6, Half-Life, the shared runtime
 and dedicated-server support. The supported build configuration is Windows x86.
-Of the original 57 non-external MSBuild projects, 16 are enabled by default,
-3 are optional, and 38 have been removed.
+Of the original 57 non-external MSBuild projects, 19 remain and are enabled by
+default; 38 have been removed. Broadcasting, A3D and dedicated servers can be
+disabled for reduced builds.
 
 Paths below are relative to `GoldSrc-SDK/`, except runtime outputs, which are
-relative to `build/<preset>/runtime/<Configuration>/` for CMake builds. The
-legacy MSBuild projects use `GoldSrc-SDK/bin/Win32/<Configuration>/` instead.
+relative to repository-root `output/` for Release CMake builds (`output-debug/`
+for Debug). Legacy MSBuild outputs use `GoldSrc-SDK/bin/Win32/<Configuration>/`.
 See [building.md](building.md) for commands, output separation and feature options.
 
 ## Default runtime
@@ -30,21 +31,25 @@ See [building.md](building.md) for commands, output separation and feature optio
 | `particleman` | `valve/cl_dlls/particleman.dll` | Particle runtime |
 | `hltv_core` | `Core.dll` | Demo/world/server interfaces and private support source |
 | `demoplayer` | `DemoPlayer.dll` | Engine demo playback |
+| `hltv` | `hltv.exe` | Standalone broadcaster |
+| `hltv_proxy` | `proxy.dll` | Broadcasting proxy |
+| `a3dapi` | `a3dapi.dll` | Legacy A3D adapter |
 
 GameUI and particleman keep their `valve/cl_dlls/` location: Counter-Strike
 resolves them through the filesystem's game/fallback search paths. Core and
 DemoPlayer remain required with broadcasting disabled. The engine requests
 `demoplayer001`; DemoPlayer requests Core's `server001` and `world001` interfaces.
 
-## Optional runtime
+## Reduced runtime options
 
 | CMake option | Targets and outputs | Retained boundary |
 | --- | --- | --- |
 | `CSE_BUILD_BROADCASTING` | `hltv` → `hltv.exe`, `hltv_proxy` → `proxy.dll` | Standalone broadcaster, Proxy and Core's private support/bzip2 source |
 | `CSE_BUILD_A3D` | `a3dapi` → `a3dapi.dll` | Legacy adapter, exports/resources and five generated geometry inputs |
 
-Both options default OFF. Their source and live MSBuild projects remain; the
-legacy solution still has Debug/Release `Build.0` entries for all three projects.
+Both options default ON. Disable them explicitly for a reduced build. Their
+source and live MSBuild projects remain; the legacy solution includes all three
+projects in Debug/Release builds.
 Building the A3D adapter does not establish compatibility with an A3D provider.
 
 ## Removed targets and source
@@ -102,8 +107,11 @@ The [generated crosswalk](msbuild-crosswalk.md) and
 flag, library, resource, export and per-file selections for all 19 projects.
 Generation preserves configuration-specific CRT/assertions, FP/EH overrides,
 include order, forced headers, exclusions, export names/ordinals and resources.
-[Building](building.md) describes the VGUI1 import-library and A3D generation
-steps; [source corrections](source-corrections.md) records C1–C4.
+CMake Release diagnostics are intentionally opt-in; Release incremental linking
+is disabled. Required intermediates remain under the selected build directory.
+The [build manifest reference](msbuild/README.md#generated-production-inputs)
+describes VGUI1 import-library and A3D generation.
+[Source corrections](source-corrections.md) records C1–C4.
 
 Native SDL3 is pinned and staged for the five linker consumers: both engines,
 both game clients and GameUI. Both engines also build/stage the shared mpg123
