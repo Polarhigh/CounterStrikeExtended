@@ -9,11 +9,14 @@
 
 #include "PropertyDialog.h"
 
+class COptionsSubInterface;
+
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
 class COptionsDialog : public vgui2::PropertyDialog
 {
+    DECLARE_CLASS_SIMPLE_NAMED(COptionsDialog, vgui2::PropertyDialog, "PropertyDialog");
 public:
 	COptionsDialog( vgui2::Panel* parent );
 	~COptionsDialog() override;
@@ -22,6 +25,14 @@ public:
 	void Activate() override;
 
 protected:
+    void PerformLayout() override;
+    void OnCommand(const char* command) override;
+    void OnThink() override;
 	void SetTitle( const char* title, bool surfaceTitle ) override;
 	void OnClose() override;
+
+private:
+    COptionsSubInterface* m_interfacePage = nullptr;
+    bool m_languageApplyPending = false;
+    bool m_closeAfterLanguageApply = false;
 };

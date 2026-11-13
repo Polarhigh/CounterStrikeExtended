@@ -1,4 +1,5 @@
 #include "CreateCommandMenu.h"
+#include "../../../common/resource_text.h"
 #include "iviewport.h"
 #include "vgui_controls/ComboBox.h"
 #include "Menu.h"
@@ -68,9 +69,19 @@ Menu* CCreateCommandComboMenu::CreateCommandMenu( char* menuFile, int playerTeam
 	root->SetVisible( false );
 	Menu* currentMenu = root;
 
-	char* file = (char*)gViewPortInterface->GetClientDllInterface()->COM_LoadFile( menuFile, 5, NULL );
-	if ( !file )
-		return NULL;
+    int fileBytes = 0;
+    void* loaded = gViewPortInterface->GetClientDllInterface()->COM_LoadFile(menuFile, 5, &fileBytes);
+    std::string text;
+    const bool decoded = loaded && fileBytes >= 0
+        && cse::resource_text::Decode(loaded, static_cast<std::size_t>(fileBytes), text);
+    if (loaded) {
+        gViewPortInterface->GetClientDllInterface()->COM_FreeFile(loaded);
+    }
+    if (!decoded || text.empty()) {
+        delete root;
+        return NULL;
+    }
+    char* file = &text[0];
 
 	char lastButtonText[32] = "file start";
 	char token[1024];
@@ -228,11 +239,28 @@ Menu* CCreateCommandComboMenu::CreateCommandMenu( char* menuFile, int playerTeam
 		data = gViewPortInterface->GetClientDllInterface()->COM_ParseFile( data, token );
 	}
 
-	gViewPortInterface->GetClientDllInterface()->COM_FreeFile( data );
 	return root;
 }
 
 bool CCreateCommandComboMenu::IsCustomToken( const char* )
 {
 	return false;
+}
+
+void RefreshCommandMenuText(vgui2::Menu* destination, vgui2::Menu* source) {
+    if (!destination || !source || destination->GetItemCount() != source->GetItemCount()) {
+        return;
+    }
+    for (int row = 0; row < destination->GetItemCount(); ++row) {
+        vgui2::MenuItem* target = destination->GetMenuItem(destination->GetMenuID(row));
+        vgui2::MenuItem* replacement = source->GetMenuItem(source->GetMenuID(row));
+        if (!target || !replacement) {
+            continue;
+        }
+        wchar_t text[1024]{};
+        replacement->GetText(text, static_cast<int>(sizeof(text) / sizeof(text[0])));
+        target->SetText(text);
+        RefreshCommandMenuText(target->GetMenu(), replacement->GetMenu());
+    }
+    destination->InvalidateLayout(false, false);
 }

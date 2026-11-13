@@ -71,3 +71,46 @@ The `vgui_tests` driver accepts an optional final read-only game resource search
 (for example, the original `valve` directory supplying `resource/marlett.ttf`). Run with
 explicit `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy SDL_RENDER_DRIVER=software` and
 fixture-owned temporary preferences, using matching current VGUI/filesystem dependencies.
+
+## Interface Options page
+
+`--driver interface_options` builds the production language page and unchanged
+complete `OptionsDialog` methods against the real shared controls. Only unrelated
+Options pages, game metadata and taskbar are doubles. `options-receipt.json`
+records the copied method source/body hashes. A versioned `EngineApi` factory
+binds the production `localization::State` to a controlled `StateBackend`; only
+catalogue preparation and private fixture persistence are controlled. The page
+and dialog never own preference writes. The strict-reader fallback remains
+covered for missing service/malformed native records; separate native preference
+fixtures cover actual backend validation.
+
+```sh
+python3 tests/native/server_browser_ui/build_vgui_component.py --repo . \
+  --packet build/interface-options-ui --profile release \
+  --recipe-cache build/runtime-macos-arm64-release \
+  --sdl-library build/runtime-macos-arm64-release/runtime/Release/libSDL3.0.dylib \
+  --driver interface_options
+build/interface-options-ui/vgui_tests /absolute/vgui2.dylib /absolute/filesystem_stdio.dylib \
+  "$PWD/build/interface-options-ui/resources" "$PWD/build/interface-options-ui/polish" polish \
+  "/absolute/Half-Life/platform"
+```
+
+Repeat the executable for every manifest language. The owning cache needs a full
+Ninja compilation database (`ninja -t compdb`), as for the existing drivers.
+The installed platform path supplies the actual Tracker scheme/assets; translation
+text comes from the generated packet. The geometry bridge sets real 640×480
+screen metrics before loading schemes. Checks cover CS, HL and single-player-only
+tab composition, all tab bounds/text, page notes and dropdown item glyph coverage,
+non-editable stable ids, default/invalid/saved state, unchanged Apply, save failure
+and retry, Apply/OK/Cancel/reset, automatic clearing and launch-override notice.
+Pending Apply/OK keeps the owner alive, ignores duplicate commands, and applies
+other pages once. Engine completion updates the accepted stable preference;
+only successful OK closes the dialog. Request rejection, preparation/save
+failure, supersession and actual production result-history eviction retain a
+retryable owner and the previous active/saved state. Unchanged Apply/OK and
+Cancel make no language request. Explicit preference changes with the same
+effective language persist without rebuilding. Every scenario asserts that no
+client or restart command is issued.
+`fit.tsv`, `options.bmp` and `languages.bmp` contain measured and rendered evidence.
+Empty image-only frame decorations are outside translated-text measurement.
+This component test does not launch a full game or instantiate other Options pages.

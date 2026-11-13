@@ -6,6 +6,7 @@
 //=============================================================================
 
 #include "teammenu.h"
+#include "../../../vgui2/controls/ScrollBar.h"
 #include "../../../vgui2/controls/Button.h"
 #include "../../../vgui2/controls/RichText.h"
 #include "../../../vgui2/controls/Label.h"
@@ -19,6 +20,7 @@
 #include <stdlib.h> // MAX_PATH define
 #include <string.h>
 #include <climits>
+#include "../../../common/resource_text.h"
 
 extern IGameUIFuncs* gameuifuncs; // for key binding details
 void DuckMessage( const char* text );
@@ -163,7 +165,7 @@ void CTeamMenu::LoadMapPage(const char* map) {
         _snprintf(filename, sizeof(filename), "maps/default.txt");
     }
 
-    FileHandle_t file = vgui2::filesystem()->Open(filename, "r", NULL);
+    FileHandle_t file = vgui2::filesystem()->Open(filename, "rb", NULL);
     if (!file) {
         return;
     }
@@ -172,27 +174,18 @@ void CTeamMenu::LoadMapPage(const char* map) {
         vgui2::filesystem()->Close(file);
         return;
     }
-    wchar_t* text = static_cast<wchar_t*>(malloc(size + sizeof(wchar_t)));
-    if (!text) {
-        vgui2::filesystem()->Close(file);
-        return;
-    }
-    memset(text, 0, size + sizeof(wchar_t));
-    int bytesRead = vgui2::filesystem()->Read(text, static_cast<int>(size), file);
+    std::vector<unsigned char> bytes(size);
+    int bytesRead = size == 0 ? 0 : vgui2::filesystem()->Read(bytes.data(), static_cast<int>(size), file);
     vgui2::filesystem()->Close(file);
     if (bytesRead != static_cast<int>(size)) {
-        free(text);
         return;
     }
 
-    text[size / sizeof(wchar_t)] = 0;
-    if (*text == 0xFEFF) {
-        m_pMapInfo->SetText(text + 1);
-    } else {
-        m_pMapInfo->SetText(reinterpret_cast<const char*>(text));
+    std::string text;
+    if (!cse::resource_text::Decode(bytes.data(), bytes.size(), text)) {
+        return;
     }
-    m_pMapInfo->GotoTextStart();
-    free(text);
+    m_pMapInfo->SetTextPreservingView(text.c_str());
     m_bMapPageLoaded = true;
     InvalidateLayout(false, false);
     Repaint();
@@ -241,4 +234,19 @@ void CTeamMenu::SetLabelText( const char* name, const char* text )
 	vgui2::Label* label = dynamic_cast<vgui2::Label*>( FindChildByName( name, false ) );
 	if ( label )
 		label->SetText( text );
+}
+
+void CTeamMenu::RefreshLanguage() {
+    if (!m_bMapPageRequested) {
+        return;
+    }
+    auto* scroll = dynamic_cast<vgui2::ScrollBar*>(m_pMapInfo->FindChildByName("ScrollBar", false));
+    const int position = scroll ? scroll->GetValue() : 0;
+    const std::string map = m_mapPageName;
+    InvalidateMapPage();
+    LoadMapPage(map.c_str());
+    m_pMapInfo->InvalidateLayout(true, false);
+    if (scroll) {
+        scroll->SetValue(position);
+    }
 }

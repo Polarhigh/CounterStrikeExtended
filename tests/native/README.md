@@ -6,6 +6,33 @@ coverage limits. The options below cover the simpler projects that have no
 README. These fixtures check individual components; full runtime builds are
 described in the [build reference](../../docs/building.md).
 
+The portable bundled-translation checks live in `tests/localization_resources`:
+
+```sh
+cmake -S tests/localization_resources -B build/localization-resources -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/localization-resources --parallel
+ctest --test-dir build/localization-resources --output-on-failure
+```
+
+On macOS, configure with `-DCSE_LOCALIZATION_RUNTIME_ROOT=/absolute/runtime/root`
+to also exercise the actual VGUI/filesystem loader for every supported language,
+the Korean alias, stock catalogue families and English fallback. This uses the
+existing runtime libraries with dummy SDL providers; it does not launch a game.
+With a C++ compiler, `-DCSE_LOCALIZATION_NATIVE_TESTS=ON` also checks the portable
+disk-text decoder (UTF-16 endian variants, surrogate pairs, BOMs and legacy bytes).
+The real-loader option enables that decoder check automatically.
+
+The [legacy text consumer fixtures](localization_text/README.md) run the actual
+title-message initializer/parser against all bundled title files and the
+[team-menu fixture](team_menu/README.md) checks every bundled map briefing.
+
+Russian/Polish validation additionally covers [actual font/layout fit](../localization_resources/README.md),
+[HL HUD Unicode](hl_message_utf8/README.md), [HL menu bounds and fit](hl_menu_localization/README.md), [VGUI1 text and bitmap fallback](vgui1_utf8/README.md),
+and [shared startup language selection](interface_language/README.md).
+
+The Interface language selector has [actual Options control checks](server_browser_ui/README.md#interface-options-page)
+and [strict native preference reader checks](interface_preferences/README.md).
+
 For a pure component, from the repository root:
 
 ```sh
@@ -28,7 +55,7 @@ window and network probes are separate authorized actions, not implied by a buil
 | Save/demo/navigation/archive data | [save callbacks](callbacks/), [canonical archive](save_archive/), [demo](demo/), [navigation](navigation/), [HPAK](hpak_records/README.md) |
 | Audio and voice | [sound](sound/), [A3D module/device ABI](a3d_module/README.md), [selected output/coexistence](a3d_live/README.md), [capture](voice_capture/README.md), [mixer](voice_mixer/README.md), [caller wiring](voice_capture_wiring/README.md) |
 | Steam and browser | [Steam](steam/), [service lifetime](steam_service/), [server](steam_server/README.md), [CEF](cef_host/README.md) |
-| Text and UI | [text encoding](text_encoding/README.md), [UI lengths](ui_lengths/README.md), [death notices](death_notice/README.md), [VGUI1 Debug](vgui1_debug/README.md) |
+| Text and UI | [text encoding](text_encoding/README.md), [localized resources](localization_text/README.md), [UI lengths](ui_lengths/README.md), [death notices](death_notice/README.md), [VGUI1 Debug](vgui1_debug/README.md) |
 | Built Apple Silicon client | [actual-library UI, font and module-load checks](mac_client/README.md) |
 | Software and dedicated | [software video](software_video/README.md), [lifetime](software_lifetime/README.md), [dedicated host](dedicated_host/README.md), [admin](dedicated_admin/README.md), [standalone VGUI](vgui2_standalone/README.md) |
 | Browser | [model/provider](server_browser/README.md), [actual VGUI/lifetime/original-view cases](server_browser_ui/README.md) |

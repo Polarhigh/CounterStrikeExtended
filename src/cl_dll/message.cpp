@@ -24,6 +24,8 @@
 #include <string.h>
 #include <stdio.h>
 #include "parsemsg.h"
+#include "legacy_message_text.h"
+#include "localization_client.h"
 
 DECLARE_MESSAGE( m_Message, HudText )
 DECLARE_MESSAGE( m_Message, GameTitle )
@@ -54,14 +56,18 @@ int CHudMessage::VidInit( void )
 };
 
 
-void CHudMessage::Reset( void )
-{
- 	memset( m_pMessages, 0, sizeof( m_pMessages[0] ) * maxHUDMessages );
-	memset( m_startTime, 0, sizeof( m_startTime[0] ) * maxHUDMessages );
-	
-	m_bEndAfterMessage = false;
-	m_gameTitleTime = 0;
-	m_pGameTitle = NULL;
+void CHudMessage::Reset(void) {
+    m_parms.pMessage = nullptr;
+    for (int index = 0; index < maxHUDMessages; ++index) {
+        m_pMessages[index] = nullptr;
+        m_startTime[index] = 0;
+        m_messageEndTimes[index] = 0;
+        m_ownedMessages[index].Clear();
+    }
+    m_ownedGameTitle.Clear();
+    m_bEndAfterMessage = false;
+    m_gameTitleTime = 0;
+    m_pGameTitle = nullptr;
 }
 
 
@@ -196,12 +202,6 @@ void CHudMessage::MessageScanNextChar( void )
 	m_parms.r = ((srcRed * (255-blend)) + (destRed * blend)) >> 8;
 	m_parms.g = ((srcGreen * (255-blend)) + (destGreen * blend)) >> 8;
 	m_parms.b = ((srcBlue * (255-blend)) + (destBlue * blend)) >> 8;
-
-	if ( m_parms.pMessage->effect == 1 && m_parms.charTime != 0 )
-	{
-		if ( m_parms.x >= 0 && m_parms.y >= 0 && (m_parms.x + gHUD.m_scrinfo.charWidths[ m_parms.text ]) <= ScreenWidth )
-			TextMessageDrawChar( m_parms.x, m_parms.y, m_parms.text, m_parms.pMessage->r2, m_parms.pMessage->g2, m_parms.pMessage->b2 );
-	}
 }
 
 
@@ -246,75 +246,65 @@ void CHudMessage::MessageScanStart( void )
 }
 
 
-void CHudMessage::MessageDrawScan( client_textmessage_t *pMessage, float time )
-{
-	int i, j, length, width;
-	const char *pText;
-	unsigned char line[80];
+void CHudMessage::MessageDrawScan(client_textmessage_t* pMessage, float time) {
+    const auto metrics = cse::hud_message::BorrowCreditsMetrics(
+        reinterpret_cast<const void*>(gEngfuncs.pfnDrawCharacter));
+    const cse::hud_message::Text text(pMessage->pMessage, metrics);
+    const int lineHeight = text.unicode ? metrics.height : gHUD.m_scrinfo.iCharHeight;
+    const auto glyphWidth = [&](int character) {
+        return text.unicode ? metrics.Width(character) : gHUD.m_scrinfo.charWidths[character];
+    };
 
-	pText = pMessage->pMessage;
-	// Count lines
-	m_parms.lines = 1;
-	m_parms.time = time;
-	m_parms.pMessage = pMessage;
-	length = 0;
-	width = 0;
-	m_parms.totalWidth = 0;
-	while ( *pText )
-	{
-		if ( *pText == '\n' )
-		{
-			m_parms.lines++;
-			if ( width > m_parms.totalWidth )
-				m_parms.totalWidth = width;
-			width = 0;
-		}
-		else
-			width += gHUD.m_scrinfo.charWidths[*pText];
-		pText++;
-		length++;
-	}
-	m_parms.length = length;
-	m_parms.totalHeight = (m_parms.lines * gHUD.m_scrinfo.iCharHeight);
+    m_parms.lines = 1;
+    m_parms.time = time;
+    m_parms.pMessage = pMessage;
+    m_parms.totalWidth = 0;
+    int width = 0;
+    for (int character : text.cells) {
+        if (character == '\n') {
+            ++m_parms.lines;
+            m_parms.totalWidth = (std::max)(m_parms.totalWidth, width);
+            width = 0;
+        } else {
+            width += glyphWidth(character);
+        }
+    }
+    m_parms.totalWidth = (std::max)(m_parms.totalWidth, width);
+    m_parms.length = text.VisibleLength();
+    m_parms.totalHeight = m_parms.lines * lineHeight;
+    m_parms.y = YPosition(pMessage->y, m_parms.totalHeight);
+    m_parms.charTime = 0;
+    MessageScanStart();
 
-
-	m_parms.y = YPosition( pMessage->y, m_parms.totalHeight );
-	pText = pMessage->pMessage;
-
-	m_parms.charTime = 0;
-
-	MessageScanStart();
-
-	for ( i = 0; i < m_parms.lines; i++ )
-	{
-		m_parms.lineLength = 0;
-		m_parms.width = 0;
-		while ( *pText && *pText != '\n' && m_parms.lineLength < ARRAYSIZE( line ) - 1 )
-		{
-			unsigned char c = *pText;
-			line[m_parms.lineLength] = c;
-			m_parms.width += gHUD.m_scrinfo.charWidths[c];
-			m_parms.lineLength++;
-			pText++;
-		}
-		pText++;		// Skip LF
-		line[m_parms.lineLength] = 0;
-
-		m_parms.x = XPosition( pMessage->x, m_parms.width, m_parms.totalWidth );
-
-		for ( j = 0; j < m_parms.lineLength; j++ )
-		{
-			m_parms.text = line[j];
-			int next = m_parms.x + gHUD.m_scrinfo.charWidths[ m_parms.text ];
-			MessageScanNextChar();
-			
-			if ( m_parms.x >= 0 && m_parms.y >= 0 && next <= ScreenWidth )
-				TextMessageDrawChar( m_parms.x, m_parms.y, m_parms.text, m_parms.r, m_parms.g, m_parms.b );
-			m_parms.x = next;
-		}
-
-		m_parms.y += gHUD.m_scrinfo.iCharHeight;
-	}
+    std::size_t lineStart = 0;
+    for (int line = 0; line < m_parms.lines; ++line) {
+        std::size_t lineEnd = lineStart;
+        m_parms.width = 0;
+        while (lineEnd < text.cells.size() && text.cells[lineEnd] != '\n') {
+            m_parms.width += glyphWidth(text.cells[lineEnd]);
+            ++lineEnd;
+        }
+        m_parms.lineLength = static_cast<int>(lineEnd - lineStart);
+        m_parms.x = XPosition(pMessage->x, m_parms.width, m_parms.totalWidth);
+        for (std::size_t index = lineStart; index < lineEnd; ++index) {
+            m_parms.text = text.cells[index];
+            const int next = m_parms.x + glyphWidth(m_parms.text);
+            MessageScanNextChar();
+            if (m_parms.x >= 0 && m_parms.y >= 0 && next <= ScreenWidth &&
+                m_parms.y + lineHeight <= ScreenHeight) {
+                if (pMessage->effect == 1 && m_parms.charTime != 0) {
+                    TextMessageDrawChar(m_parms.x, m_parms.y, m_parms.text,
+                        pMessage->r2, pMessage->g2, pMessage->b2);
+                }
+                TextMessageDrawChar(m_parms.x, m_parms.y, m_parms.text,
+                    m_parms.r, m_parms.g, m_parms.b);
+            }
+            m_parms.x = next;
+        }
+        // An empty final line is valid. Never advance beyond its terminating NUL.
+        lineStart = lineEnd < text.cells.size() ? lineEnd + 1 : lineEnd;
+        m_parms.y += lineHeight;
+    }
 }
 
 
@@ -358,67 +348,42 @@ int CHudMessage::Draw( float fTime )
 			drawn = 1;
 		}
 	}
-	// Fixup level transitions
-	for ( i = 0; i < maxHUDMessages; i++ )
-	{
-		// Assume m_parms.time contains last time
-		if ( m_pMessages[i] )
-		{
-			pMessage = m_pMessages[i];
-			if ( m_startTime[i] > gHUD.m_flTime )
-				m_startTime[i] = gHUD.m_flTime + m_parms.time - m_startTime[i] + 0.2;	// Server takes 0.2 seconds to spawn, adjust for this
-		}
-	}
+    // Keep the accepted message lifetime when the client clock changes levels.
+    constexpr double ServerSpawnDelaySeconds = 0.2;
+    for (i = 0; i < maxHUDMessages; ++i) {
+        if (m_pMessages[i] && m_startTime[i] > gHUD.m_flTime) {
+            const float previousStart = m_startTime[i];
+            m_startTime[i] = gHUD.m_flTime + m_parms.time - previousStart + ServerSpawnDelaySeconds;
+            m_messageEndTimes[i] += m_startTime[i] - previousStart;
+        }
+    }
 
-	for ( i = 0; i < maxHUDMessages; i++ )
-	{
-		if ( m_pMessages[i] )
-		{
-			pMessage = m_pMessages[i];
-
-			// This is when the message is over
-			switch( pMessage->effect )
-			{
-			case 0:
-			case 1:
-				endTime = m_startTime[i] + pMessage->fadein + pMessage->fadeout + pMessage->holdtime;
-				break;
-			
-			// Fade in is per character in scanning messages
-			case 2:
-				endTime = m_startTime[i] + (pMessage->fadein * strlen( pMessage->pMessage )) + pMessage->fadeout + pMessage->holdtime;
-				break;
-
-			default:
-				m_pMessages[i] = NULL;
-				continue;
-			}
-
-			if ( fTime <= endTime )
-			{
-				float messageTime = fTime - m_startTime[i];
-
-				// Draw the message
-				// effect 0 is fade in/fade out
-				// effect 1 is flickery credits
-				// effect 2 is write out (training room)
-				MessageDrawScan( pMessage, messageTime );
-
-				drawn++;
-			}
-			else
-			{
-				// The message is over
-				m_pMessages[i] = NULL;
-
-				if (m_bEndAfterMessage)
-				{
-					// leave game
-					gEngfuncs.pfnClientCmd("wait\nwait\nwait\nwait\nwait\nwait\nwait\ndisconnect\n");
-				}
-			}
-		}
-	}
+    for (i = 0; i < maxHUDMessages; ++i) {
+        if (!m_pMessages[i]) {
+            continue;
+        }
+        pMessage = m_pMessages[i];
+        switch (pMessage->effect) {
+        case 0:
+        case 1:
+        case 2:
+            endTime = m_messageEndTimes[i];
+            break;
+        default:
+            ReleaseMessage(i);
+            continue;
+        }
+        if (fTime <= endTime) {
+            const float messageTime = fTime - m_startTime[i];
+            MessageDrawScan(pMessage, messageTime);
+            ++drawn;
+        } else {
+            ReleaseMessage(i);
+            if (m_bEndAfterMessage) {
+                gEngfuncs.pfnClientCmd("wait\nwait\nwait\nwait\nwait\nwait\nwait\ndisconnect\n");
+            }
+        }
+    }
 
 	// Remember the time -- to fix up level transitions
 	m_parms.time = gHUD.m_flTime;
@@ -460,7 +425,8 @@ void CHudMessage::MessageAdd( const char *pName, float time )
 				g_pCustomMessage.fxtime = 0.25;
 				g_pCustomMessage.holdtime = 5;
 				g_pCustomMessage.pName = g_pCustomName;
-				strcpy( g_pCustomText, pName );
+				strncpy(g_pCustomText, pName, sizeof(g_pCustomText) - 1);
+                g_pCustomText[sizeof(g_pCustomText) - 1] = 0;
 				g_pCustomMessage.pMessage = g_pCustomText;
 
 				tempMessage = &g_pCustomMessage;
@@ -481,15 +447,17 @@ void CHudMessage::MessageAdd( const char *pName, float time )
 					{
 						if ( fabs( tempMessage->x - m_pMessages[j]->x ) < 0.0001 )
 						{
-							m_pMessages[j] = NULL;
+                            ReleaseMessage(j);
 						}
 					}
 				}
 			}
 
-			m_pMessages[i] = tempMessage;
-			m_startTime[i] = time;
-			return;
+			m_ownedMessages[i].Assign(tempMessage, IsCatalogueMessage(tempMessage));
+            m_pMessages[i] = m_ownedMessages[i].Get();
+            m_startTime[i] = time;
+            m_messageEndTimes[i] = MessageEndTime(i);
+            return;
 		}
 	}
 }
@@ -523,7 +491,9 @@ int CHudMessage::MsgFunc_HudText( const char *pszName,  int iSize, void *pbuf )
 
 int CHudMessage::MsgFunc_GameTitle( const char *pszName,  int iSize, void *pbuf )
 {
-	m_pGameTitle = TextMessageGet( "GAMETITLE" );
+	client_textmessage_t* title = TextMessageGet("GAMETITLE");
+    m_ownedGameTitle.Assign(title, IsCatalogueMessage(title));
+    m_pGameTitle = m_ownedGameTitle.Get();
 	if ( m_pGameTitle != NULL )
 	{
 		m_gameTitleTime = gHUD.m_flTime;
@@ -548,10 +518,51 @@ void CHudMessage::MessageAdd(client_textmessage_t * newMessage )
 	{
 		if ( !m_pMessages[i] )
 		{
-			m_pMessages[i] = newMessage;
-			m_startTime[i] = gHUD.m_flTime;
-			return;
+			m_ownedMessages[i].Assign(newMessage, false);
+            m_pMessages[i] = m_ownedMessages[i].Get();
+            m_startTime[i] = gHUD.m_flTime;
+            m_messageEndTimes[i] = MessageEndTime(i);
+            return;
 		}
 	}
 
+}
+
+void CHudMessage::RefreshLanguage() {
+    for (int index = 0; index < maxHUDMessages; ++index) {
+        if (m_pMessages[index]) {
+            m_ownedMessages[index].Relocalize(TextMessageGet);
+            m_pMessages[index] = m_ownedMessages[index].Get();
+        }
+    }
+    if (m_pGameTitle) {
+        m_ownedGameTitle.Relocalize(TextMessageGet);
+        m_pGameTitle = m_ownedGameTitle.Get();
+    }
+    m_parms.pMessage = nullptr;
+}
+
+float CHudMessage::MessageEndTime(int index) const {
+    const client_textmessage_t* message = m_pMessages[index];
+    if (!message) {
+        return 0;
+    }
+    float revealTime = message->fadein;
+    if (message->effect == 2) {
+        const auto metrics = cse::hud_message::BorrowCreditsMetrics(
+            reinterpret_cast<const void*>(gEngfuncs.pfnDrawCharacter));
+        const cse::hud_message::Text text(message->pMessage, metrics);
+        revealTime *= text.VisibleLength();
+    }
+    return m_startTime[index] + revealTime + message->fadeout + message->holdtime;
+}
+
+void CHudMessage::ReleaseMessage(int index) {
+    if (m_parms.pMessage == m_pMessages[index]) {
+        m_parms.pMessage = nullptr;
+    }
+    m_pMessages[index] = nullptr;
+    m_ownedMessages[index].Clear();
+    m_startTime[index] = 0;
+    m_messageEndTimes[index] = 0;
 }

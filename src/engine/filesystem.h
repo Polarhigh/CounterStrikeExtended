@@ -4,6 +4,7 @@
 #include "../public/FileSystem.h"
 
 #include <cstddef>
+#include <string>
 
 extern IFileSystem* g_pFileSystem;
 extern CreateInterfaceFn g_FileSystemFactory;
@@ -12,6 +13,12 @@ extern bool bLowViolenceBuild;
 int				FileSystem_Init( char* basedir, CreateInterfaceFn filesystemFactory );
 void			FileSystem_Shutdown();
 char* GetBaseDirectory();
+std::string FileSystem_GetInterfaceLanguage();
+std::string FileSystem_ResolveInterfaceLanguage(const char* preference);
+IFileSystem* FileSystem_PrepareInterfaceLanguage(const char* language);
+IFileSystem* FileSystem_InterfaceLanguageBaseline();
+void FileSystem_CommitInterfaceLanguage();
+void FileSystem_DiscardInterfaceLanguage();
 int				FileSystem_SetGameDirectory( const char* defaultDirectory, const char* gameDirectory );
 void			CheckLiblistForFallbackDir( const char* gameDirectory, bool languageEnabled, const char* language,
 					bool lowViolence );

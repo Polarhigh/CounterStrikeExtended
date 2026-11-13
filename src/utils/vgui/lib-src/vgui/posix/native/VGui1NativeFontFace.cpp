@@ -1,5 +1,6 @@
 #include "VGui1NativeFontFace.h"
 
+#include "../../common/VGui1TextEncoding.h"
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -134,7 +135,7 @@ bool SymbolMap(FT_Face face, std::array<FT_UInt, kByteCount>& output) {
 }
 
 struct NativeFontFace::Impl {
-    std::vector<unsigned char> bytes;
+    std::shared_ptr<const std::vector<unsigned char>> bytes;
     FT_Library library = nullptr;
     FT_Face face = nullptr;
     long faceIndex = 0;
@@ -212,12 +213,38 @@ std::unique_ptr<NativeFontFace> NativeFontFace::CreateOwned(const void* bytes, s
     }
     result = Result::Unrepresentable;
     diagnostic = "font byte span exceeds the native FT/addressable range";
+    if (length > kMaximumOffset || length > static_cast<std::size_t>((std::numeric_limits<FT_Long>::max)())) {
+        return {};
+    }
+    const auto* first = static_cast<const unsigned char*>(bytes);
+    auto owned = std::make_shared<const std::vector<unsigned char>>(first, first + length);
+    return CreateShared(std::move(owned), faceIndex, expectedPostScriptName, request, result, nativeError, diagnostic);
+}
+
+std::unique_ptr<NativeFontFace> NativeFontFace::CreateShared(
+    std::shared_ptr<const std::vector<unsigned char>> bytes, long faceIndex,
+    const char* expectedPostScriptName, const FontRequest& request,
+    Result& result, int& nativeError, std::string& diagnostic) noexcept {
+    const std::size_t length = bytes ? bytes->size() : 0;
+    result = Result::InvalidArgument;
+    nativeError = 0;
+    diagnostic = "invalid owned font input/index/identity";
+    if (!bytes || length == 0 || faceIndex < 0 || faceIndex > kMaximumFaceIndex
+        || !expectedPostScriptName || !expectedPostScriptName[0]) {
+        return {};
+    }
+    result = Result::UnsupportedRequest;
+    diagnostic = "native face does not support this geometry/style/byte encoding";
+    if (!SupportedRequest(request)) {
+        return {};
+    }
+    result = Result::Unrepresentable;
+    diagnostic = "font byte span exceeds the native FT/addressable range";
     if (length > static_cast<std::size_t>((std::numeric_limits<FT_Long>::max)()) || length > kMaximumOffset) {
         return {};
     }
     std::unique_ptr<Impl> impl(new Impl);
-    const auto* first = static_cast<const unsigned char*>(bytes);
-    impl->bytes.assign(first, first + length);
+    impl->bytes = std::move(bytes);
     result = Result::NativeFailure;
     diagnostic = "FreeType library/profile initialization failed";
     nativeError = FT_Init_FreeType(&impl->library);
@@ -238,7 +265,7 @@ std::unique_ptr<NativeFontFace> NativeFontFace::CreateOwned(const void* bytes, s
     }
     result = Result::InvalidFont;
     diagnostic = "indexed memory face is invalid or does not match discovered PostScript identity";
-    nativeError = FT_New_Memory_Face(impl->library, impl->bytes.data(), static_cast<FT_Long>(length),
+    nativeError = FT_New_Memory_Face(impl->library, impl->bytes->data(), static_cast<FT_Long>(length),
         static_cast<FT_Long>(faceIndex), &impl->face);
     if (nativeError != 0) {
         return {};
@@ -380,7 +407,17 @@ const CandidateMetrics& NativeFontFace::DetailedMetrics() const noexcept {
 }
 
 unsigned int NativeFontFace::GlyphIndex(unsigned int byte) const noexcept {
-    return byte < impl_->glyphs.size() ? impl_->glyphs[byte] : 0;
+    if (byte < impl_->glyphs.size()) {
+        return impl_->glyphs[byte];
+    }
+    byte = static_cast<unsigned int>(cse_vgui1::text::UnicodeValue(static_cast<int>(byte)));
+    constexpr unsigned int BmpMaximum = 0xffff;
+    constexpr unsigned int FirstSurrogate = 0xd800;
+    constexpr unsigned int LastSurrogate = 0xdfff;
+    if (impl_->symbol || byte > BmpMaximum || (byte >= FirstSurrogate && byte <= LastSurrogate)) {
+        return 0;
+    }
+    return FT_Get_Char_Index(impl_->face, byte);
 }
 
 long NativeFontFace::FaceIndex() const noexcept {
@@ -395,11 +432,17 @@ unsigned int NativeFontFace::IntrinsicWeight() const noexcept {
     return impl_->intrinsicWeight;
 }
 
-bool NativeFontFace::RawAbc(unsigned int byte, int& a, int& b, int& c) noexcept {
-    if (byte >= impl_->abc.size()) {
-        return false;
+bool NativeFontFace::RawAbc(unsigned int character, int& a, int& b, int& c) noexcept {
+    GlyphAbc abc;
+    if (character < impl_->abc.size()) {
+        abc = impl_->abc[character];
+    } else {
+        const auto glyph = GlyphIndex(character);
+        int advance = 0;
+        if (glyph == 0 || impl_->LoadGlyph(glyph) != 0 || !GlyphMetrics(impl_->face->glyph, abc, advance)) {
+            return false;
+        }
     }
-    const auto& abc = impl_->abc[byte];
     a = abc.a;
     b = abc.b;
     c = abc.c;
@@ -407,9 +450,27 @@ bool NativeFontFace::RawAbc(unsigned int byte, int& a, int& b, int& c) noexcept 
 }
 
 bool NativeFontFace::Raster(unsigned int byte, int x, int y, int wide, int tall, unsigned char* rgba) noexcept {
-    if (byte >= impl_->abc.size() || wide < 0 || tall < 0) {
+    if (wide < 0 || tall < 0) {
         return false;
     }
+    GlyphAbc abc;
+    int advance = 0;
+    const auto glyph = GlyphIndex(byte);
+    if (byte < impl_->abc.size()) {
+        abc = impl_->abc[byte];
+        advance = impl_->advances[byte];
+    } else {
+        if (glyph == 0 || impl_->LoadGlyph(glyph) != 0 || !GlyphMetrics(impl_->face->glyph, abc, advance)) {
+            return false;
+        }
+    }
+    // The legacy GDI-compatible canvas retains state between byte glyphs.
+    // Unicode uses a separate zeroed canvas, preserving that byte behavior.
+    std::vector<unsigned char> unicodeCanvas;
+    if (byte >= impl_->abc.size()) {
+        unicodeCanvas.resize(impl_->canvas.size(), 0);
+    }
+    auto& canvas = byte < impl_->abc.size() ? impl_->canvas : unicodeCanvas;
     std::size_t pixels = 0;
     std::size_t capacity = 0;
     if (!Product(static_cast<std::size_t>(wide), static_cast<std::size_t>(tall), pixels)
@@ -418,24 +479,23 @@ bool NativeFontFace::Raster(unsigned int byte, int x, int y, int wide, int tall,
     }
     const RgbaCanvas output{rgba, capacity, wide, tall};
     const auto& metrics = impl_->metrics;
-    const BgrView view{impl_->canvas.data(), impl_->canvas.size(), metrics.maximumWidth, impl_->canvasHeight,
+    const BgrView view{canvas.data(), canvas.size(), metrics.maximumWidth, impl_->canvasHeight,
         static_cast<std::ptrdiff_t>(metrics.maximumWidth) * static_cast<std::ptrdiff_t>(kPixelBytes)};
     if (TransferLegacyBgr(view, 0, 0, x, y, output, false) != Result::Ok) {
         return false;
     }
-    const auto& abc = impl_->abc[byte];
     const std::int64_t origin = -static_cast<std::int64_t>(abc.a);
-    const std::int64_t backgroundEnd = origin + impl_->advances[byte];
+    const std::int64_t backgroundEnd = origin + advance;
     for (int row = 0; row < metrics.height; ++row) {
         for (std::int64_t column = (std::max)(std::int64_t{0}, origin);
             column < (std::min)(static_cast<std::int64_t>(metrics.maximumWidth), backgroundEnd); ++column) {
-            auto* pixel = impl_->canvas.data()
+            auto* pixel = canvas.data()
                 + (static_cast<std::size_t>(row) * metrics.maximumWidth
                     + static_cast<std::size_t>(column)) * kPixelBytes;
             std::memset(pixel, 0, kPixelBytes);
         }
     }
-    if (impl_->LoadGlyph(impl_->glyphs[byte]) != 0) {
+    if (impl_->LoadGlyph(glyph) != 0) {
         return false;
     }
     if (impl_->rotated) {
@@ -468,7 +528,7 @@ bool NativeFontFace::Raster(unsigned int byte, int x, int y, int wide, int tall,
                 if (columnX < 0 || columnX >= metrics.maximumWidth) {
                     continue;
                 }
-                auto* pixel = impl_->canvas.data()
+                auto* pixel = canvas.data()
                     + (static_cast<std::size_t>(rowY) * metrics.maximumWidth
                         + static_cast<std::size_t>(columnX)) * kPixelBytes;
                 pixel[0] = source[column * kLcdChannels + 2];
@@ -489,10 +549,10 @@ bool NativeFontFace::Raster(unsigned int byte, int x, int y, int wide, int tall,
                 const auto onLine = [&](int position) {
                     return glyphY < position && glyphY >= position - impl_->decorationThickness;
                 };
-                if (glyphX >= 0 && glyphX < impl_->advances[byte]
+                if (glyphX >= 0 && glyphX < advance
                     && ((impl_->underline && onLine(impl_->underlinePosition))
                         || (impl_->strikeout && onLine(impl_->strikeoutPosition)))) {
-                    auto* pixel = impl_->canvas.data()
+                    auto* pixel = canvas.data()
                         + (static_cast<std::size_t>(row) * metrics.maximumWidth + column) * kPixelBytes;
                     std::fill(pixel, pixel + kLcdChannels, kFullCoverage);
                 }

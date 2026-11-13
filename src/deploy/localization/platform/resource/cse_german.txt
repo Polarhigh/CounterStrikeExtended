@@ -1,0 +1,35 @@
+// Original CounterStrikeExtended interface translations.
+"lang"
+{
+    "Language" "German"
+    "Tokens"
+    {
+        "CSEServerBrowser_CurrentGame" "Verbindungen sind nur zu Servern des aktuellen Spiels möglich."
+        "CSEServerBrowser_Updating" "Liste wird aktualisiert..."
+        "CSEServerBrowser_Sorting" "Wird sortiert..."
+        "CSEServerBrowser_Unsaved" "Einstellungen konnten nicht gespeichert werden."
+        "CSEServerBrowser_Unavailable" "Die Steam-Serversuche ist nicht verfügbar."
+        "CSEServerBrowser_PasswordInvalid" "Gib ein gültiges Serverpasswort ein."
+        "CSEServerBrowser_Name" "Servername"
+        "CSEServerBrowser_Secure" "Gesichert"
+        "CSEServerBrowser_Yes" "Ja"
+        "CSEServerBrowser_No" "Nein"
+        "CSEServerBrowser_Apply" "Filter anwenden"
+        "CSEServerBrowser_Rules" "Regeln"
+        "CSEServerBrowser_Value" "Wert"
+        "CSEServerBrowser_DetailsFailed" "Einige Serverinformationen konnten nicht abgerufen werden."
+        "Console_Submit" "Senden"
+        "CSEAdmin_ChangesOnOK" "Änderungen gelten nach OK."
+        "CSEAdmin_Uptime" "Laufzeit"
+        "CSEAdmin_UDPPort" "UDP-Port"
+        "CSEAdmin_MoveUp" "Nach oben"
+        "CSEAdmin_MoveDown" "Nach unten"
+
+        "CSEInterface_Tab" "Oberfläche"
+        "CSEInterface_Language" "Sprache"
+        "CSEInterface_Automatic" "Steam-Sprache verwenden"
+        "CSEInterface_SaveFailed" "Die Sprache konnte nicht geändert werden. Bitte erneut versuchen."
+        "CSEInterface_LaunchOverride" "Die Startoption -language hat Vorrang vor dieser Einstellung."
+
+    }
+}

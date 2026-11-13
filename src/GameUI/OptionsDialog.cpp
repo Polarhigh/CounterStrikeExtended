@@ -8,11 +8,15 @@
 #include "OptionsDialog.h"
 
 #include "GameUI_Interface.h"
+#include "wrect.h"
+#include "cl_dll.h"
+#include "vgui/KeyValues.h"
 #include "ModInfo.h"
 #include "MultiplayerAdvancedDialog.h"
 #include "OptionsSubAdvanced.h"
 #include "OptionsSubAudio.h"
 #include "OptionsSubKeyboard.h"
+#include "OptionsSubInterface.h"
 #include "OptionsSubMouse.h"
 #include "OptionsSubMultiplayer.h"
 #include "OptionsSubVideo.h"
@@ -20,7 +24,10 @@
 #include "Taskbar.h"
 
 #include "PropertySheet.h"
+#include "Button.h"
 #include "vgui/ILocalize.h"
+#include "vgui/ISurface.h"
+#include <algorithm>
 #include "vgui_controls/Controls.h"
 
 #include <string.h>
@@ -32,40 +39,42 @@
 //-----------------------------------------------------------------------------
 // Purpose: Basic help dialog
 //-----------------------------------------------------------------------------
-COptionsDialog::COptionsDialog( vgui2::Panel* parent )
-	: vgui2::PropertyDialog( parent, "OptionsDialog" )
-{
-	SetHDProportional( true );
-	int tall = GetProportionalScaledValue( 444 );
-	int wide = GetProportionalScaledValue( 522 );
-	SetBounds( 0, 0, wide, tall );
-	SetCloseSound( "sound/UI/launch_dnmenu1.wav" );
-	g_pTaskbar->AddTask( GetVPanel() );
-	SetTitle( "#GameUI_Options", true );
+COptionsDialog::COptionsDialog(vgui2::Panel* parent)
+    : vgui2::PropertyDialog(parent, "OptionsDialog") {
+    SetHDProportional(true);
+    constexpr int DefaultHeight = 444;
+    constexpr int DefaultWidth = 522;
+    const int tall = GetProportionalScaledValue(DefaultHeight);
+    const int wide = GetProportionalScaledValue(DefaultWidth);
+    SetBounds(0, 0, wide, tall);
+    SetCloseSound("sound/UI/launch_dnmenu1.wav");
+    g_pTaskbar->AddTask(GetVPanel());
+    SetTitle("#GameUI_Options", true);
 
-	if ( ModInfo()->IsMultiplayerOnly() && !ModInfo()->IsSinglePlayerOnly() )
-		AddPage( new COptionsSubMultiplayer( this ), "#GameUI_Multiplayer" );
-
-	AddPage( new COptionsSubAudio( this ), "#GameUI_Audio" );
-	AddPage( new COptionsSubVideo( this ), "#GameUI_Video" );
-	AddPage( new COptionsSubMouse( this ), "#GameUI_Mouse" );
-	AddPage( new COptionsSubKeyboard( this ), "#GameUI_Keyboard" );
-
-	if ( !ModInfo()->IsSinglePlayerOnly() || !stricmp( ModInfo()->GetGameDescription(), "Half-Life" ) )
-		AddPage( new COptionsSubVoice( this ), "#GameUI_Voice" );
-
-	AddPage( new COptionsSubAdvanced( this ), "#GameUI_Content" );
-
-	if ( ModInfo()->IsSinglePlayerOnly() && stricmp( ModInfo()->GetGameDescription(), "Half-Life" ) )
-		AddPage( new CMultiplayerAdvancedPage( this ), "#GameUI_AdvancedNoEllipsis" );
-
-	if ( ( !ModInfo()->IsMultiplayerOnly() && !ModInfo()->IsSinglePlayerOnly() )
-			|| !stricmp( ModInfo()->GetGameDescription(), "Half-Life" ) )
-		AddPage( new COptionsSubMultiplayer( this ), "#GameUI_Multiplayer" );
-
-	SetApplyButtonVisible( true );
-	vgui2::PropertySheet* sheet = GetPropertySheet();
-	sheet->SetTabWidth( GetProportionalScaledValue( 72 ) );
+    // PageTab captures the minimum width when AddPage creates it.
+    constexpr int MinimumTabWidth = 24;
+    GetPropertySheet()->SetTabWidth(GetProportionalScaledValue(MinimumTabWidth));
+    if (ModInfo()->IsMultiplayerOnly() && !ModInfo()->IsSinglePlayerOnly()) {
+        AddPage(new COptionsSubMultiplayer(this), "#GameUI_Multiplayer");
+    }
+    AddPage(new COptionsSubAudio(this), "#GameUI_Audio");
+    AddPage(new COptionsSubVideo(this), "#GameUI_Video");
+    m_interfacePage = new COptionsSubInterface(this);
+    AddPage(m_interfacePage, "#CSEInterface_Tab");
+    AddPage(new COptionsSubMouse(this), "#GameUI_Mouse");
+    AddPage(new COptionsSubKeyboard(this), "#GameUI_Keyboard");
+    if (!ModInfo()->IsSinglePlayerOnly() || !stricmp(ModInfo()->GetGameDescription(), "Half-Life")) {
+        AddPage(new COptionsSubVoice(this), "#GameUI_Voice");
+    }
+    AddPage(new COptionsSubAdvanced(this), "#GameUI_Content");
+    if (ModInfo()->IsSinglePlayerOnly() && stricmp(ModInfo()->GetGameDescription(), "Half-Life")) {
+        AddPage(new CMultiplayerAdvancedPage(this), "#GameUI_AdvancedNoEllipsis");
+    }
+    if ((!ModInfo()->IsMultiplayerOnly() && !ModInfo()->IsSinglePlayerOnly())
+        || !stricmp(ModInfo()->GetGameDescription(), "Half-Life")) {
+        AddPage(new COptionsSubMultiplayer(this), "#GameUI_Multiplayer");
+    }
+    SetApplyButtonVisible(true);
 }
 
 //-----------------------------------------------------------------------------
@@ -116,8 +125,111 @@ void COptionsDialog::Run()
 //-----------------------------------------------------------------------------
 // Purpose: Deletes the dialog on close
 //-----------------------------------------------------------------------------
-void COptionsDialog::OnClose()
-{
-	vgui2::Frame::OnClose();
-	MarkForDeletion();
+void COptionsDialog::OnClose() {
+    if (m_languageApplyPending) {
+        return;
+    }
+    vgui2::Frame::OnClose();
+    MarkForDeletion();
+}
+
+void COptionsDialog::PerformLayout() {
+    vgui2::PropertyDialog::PerformLayout();
+    vgui2::PropertySheet* sheet = GetPropertySheet();
+    int tabsWidth = 0;
+    for (int index = 0; index < sheet->GetChildCount(); ++index) {
+        vgui2::Panel* child = sheet->GetChild(index);
+        if (strcmp(child->GetName(), "tab") == 0) {
+            constexpr int TabSpacing = 1;
+            tabsWidth += child->GetWide() + TabSpacing;
+        }
+    }
+    constexpr int DefaultWidth = 522;
+    constexpr int ScreenMargin = 8;
+    int workspaceX = 0;
+    int workspaceY = 0;
+    int workspaceWidth = 0;
+    int workspaceHeight = 0;
+    vgui2::surface()->GetWorkspaceBounds(workspaceX, workspaceY, workspaceWidth, workspaceHeight);
+    const int frameInset = GetWide() - sheet->GetWide();
+    const int requiredWidth = std::max(GetProportionalScaledValue(DefaultWidth), tabsWidth + frameInset);
+    const int availableWidth = std::max(1, workspaceWidth - 2 * GetProportionalScaledValue(ScreenMargin));
+    const int width = std::min(requiredWidth, availableWidth);
+    if (width != GetWide()) {
+        SetWide(width);
+        vgui2::PropertyDialog::PerformLayout();
+    }
+
+    int clientX = 0;
+    int clientY = 0;
+    int clientWidth = 0;
+    int clientHeight = 0;
+    GetClientArea(clientX, clientY, clientWidth, clientHeight);
+    constexpr int ButtonGap = 8;
+    constexpr int ButtonPadding = 12;
+    constexpr int MinimumButtonWidth = 72;
+    int right = clientX + clientWidth - GetProportionalScaledValue(ButtonGap);
+    for (const char* name : {"ApplyButton", "CancelButton", "OKButton"}) {
+        auto* button = dynamic_cast<vgui2::Button*>(FindChildByName(name, false));
+        if (!button || !button->IsVisible()) {
+            continue;
+        }
+        int contentWidth = 0;
+        int contentHeight = 0;
+        button->GetContentSize(contentWidth, contentHeight);
+        const int buttonWidth = std::max(GetProportionalScaledValue(MinimumButtonWidth),
+            contentWidth + GetProportionalScaledValue(ButtonPadding));
+        int buttonX = 0;
+        int buttonY = 0;
+        button->GetPos(buttonX, buttonY);
+        button->SetBounds(right - buttonWidth, buttonY, buttonWidth, button->GetTall());
+        right -= buttonWidth + GetProportionalScaledValue(ButtonGap);
+    }
+}
+
+void COptionsDialog::OnCommand(const char* command) {
+    if (m_languageApplyPending) {
+        return;
+    }
+    const bool appliesChanges = stricmp(command, "Apply") == 0 || stricmp(command, "OK") == 0;
+    if (appliesChanges) {
+        if (!m_interfacePage->ApplyLanguage()) {
+            GetPropertySheet()->SetActivePage(m_interfacePage);
+            EnableApplyButton(true);
+            return;
+        }
+        if (m_interfacePage->IsLanguagePending()) {
+            m_languageApplyPending = true;
+            m_closeAfterLanguageApply = stricmp(command, "OK") == 0;
+            // Apply the other pages once. Keep this owner alive until the engine
+            // reports the transaction result, including when OK requested closure.
+            vgui2::PropertyDialog::OnCommand("Apply");
+            SetEnabled(false);
+            return;
+        }
+    }
+    vgui2::PropertyDialog::OnCommand(command);
+}
+
+void COptionsDialog::OnThink() {
+    vgui2::PropertyDialog::OnThink();
+    if (!m_languageApplyPending) {
+        return;
+    }
+    bool applied = false;
+    if (!m_interfacePage->CompleteLanguageRequest(applied)) {
+        return;
+    }
+    m_languageApplyPending = false;
+    SetEnabled(true);
+    if (!applied) {
+        m_closeAfterLanguageApply = false;
+        GetPropertySheet()->SetActivePage(m_interfacePage);
+        EnableApplyButton(true);
+        return;
+    }
+    if (m_closeAfterLanguageApply) {
+        m_closeAfterLanguageApply = false;
+        OnClose();
+    }
 }
