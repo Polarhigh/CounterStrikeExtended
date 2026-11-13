@@ -12,7 +12,12 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from game_module_layouts import generate as generate_game_module_layouts
+from client_module_layouts import generate as generate_client_module_layouts
+from game_module_exports import native_definition
+from portable_game_policy import settings as portable_game_settings
 from sdl3_dependency import validate_payload
+from saved_callback_catalog import generate as generate_callback_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = ROOT / 'GoldSrc-SDK'
@@ -60,6 +65,10 @@ def import_command(target, config, path, data):
         return f'cse_link_sdl3({target} {config})'
     if path.name.lower() == 'sdl3.lib':
         raise ValueError('Unpinned SDL3 import: ' + str(path))
+    if path == SDK / 'lib/public/steam_api.lib':
+        return f'cse_link_steam({target} {config} {quote(portable(str(path)))})'
+    if path.name.lower() == 'steam_api.lib':
+        raise ValueError('Unpinned Steam import: ' + str(path))
     return f'cse_link_import({target} {config} {quote(portable(str(path)))})'
 
 
@@ -323,7 +332,7 @@ LINK = {'EnableCOMDATFolding': {'true': '/OPT:ICF', 'false': '/OPT:NOICF'},
         'DataExecutionPrevention': {'true': '/NXCOMPAT', 'false': '/NXCOMPAT:NO'},
         'SetChecksum': {'true': '/RELEASE'},
         'LinkTimeCodeGeneration': {'UseLinkTimeCodeGeneration': '/LTCG'},
-        'TargetMachine': {'MachineX86': '/MACHINE:X86'},
+        'TargetMachine': {'MachineX86': '/MACHINE:${CSE_MSVC_MACHINE}'},
         'SubSystem': {'Windows': '/SUBSYSTEM:WINDOWS', 'Console': '/SUBSYSTEM:CONSOLE'}}
 
 
@@ -357,6 +366,10 @@ def quote(value):
 
 def option_predicate(configuration, value):
     predicate = f'$<CONFIG:{configuration}>'
+    # Retained preferred image bases belong to the original Win32 image layout.
+    # Native PE images use the linker's architecture-appropriate ASLR base.
+    if value in ('/arch:SSE2', '/arch:IA32') or value.upper().startswith('/BASE:'):
+        predicate = f'$<AND:{predicate},$<STREQUAL:${{CSE_TARGET_ARCH}},x86>>'
     diagnostic = (value in ['/Zi', '/ZI', '/Z7'] or
                   value.upper().startswith(('/DEBUG', '/MAP', '/PDB:')) or value.startswith('/Fd'))
     if configuration == 'Release' and diagnostic and value.upper() != '/DEBUG:NONE':
@@ -367,6 +380,11 @@ def option_predicate(configuration, value):
 def emit_list(lines, command, target, configuration, values, language=False):
     for value in values:
         value = portable(value)
+        dependency_include = '${CSE_SDK_DIR}/external/installed/x86-windows-static-md/include'
+        if command == 'target_include_directories' and (value == dependency_include or
+                value.startswith(dependency_include + '/')):
+            lines.append(f'cse_target_dependency_include({target} {configuration} {quote(value)})')
+            continue
         predicate = option_predicate(configuration, value)
         if language:
             predicate = f'$<AND:{predicate},$<COMPILE_LANGUAGE:C,CXX>>'
@@ -379,6 +397,333 @@ def cmake_source(item):
     return portable(item['path'])
 
 
+def emit_native_module_aliases(lines, target, configs):
+    selections = [split(configs[name]['properties'].get('CseNativeModuleAliases', ''))
+                  for name in ('Debug', 'Release')]
+    if selections[0] != selections[1]:
+        raise ValueError('Native module aliases differ between configurations')
+    aliases = selections[0]
+    if not aliases:
+        return
+    if any(config['properties']['ConfigurationType'] != 'DynamicLibrary' for config in configs.values()):
+        raise ValueError('Native module aliases require a shared library')
+    if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', alias) for alias in aliases):
+        raise ValueError('Native module aliases must be plain module names')
+    if len({alias.casefold() for alias in aliases}) != len(aliases):
+        raise ValueError('Native module aliases must be unique')
+    lines.append('if(NOT WIN32)')
+    for alias in aliases:
+        lines.append(f'  cse_native_module_alias({target} {quote(alias)})')
+    lines.append('endif()')
+
+
+def emit_native_sdl3_dependency(lines, target, configs):
+    """Keep native-only SDL imports and usage includes outside Win32 selections."""
+    values = [configs[name]['properties'].get('CseNativeSdl3', 'false')
+              for name in ('Debug', 'Release')]
+    if any(value not in ('true', 'false') for value in values):
+        raise ValueError('CseNativeSdl3 must be true or false')
+    if values[0] != values[1]:
+        raise ValueError('Native SDL dependency differs between configurations')
+    if values[0] == 'true':
+        lines.append('if(NOT WIN32)')
+        for configuration in ('Debug', 'Release'):
+            lines.append(f'  cse_link_sdl3({target} {configuration})')
+        lines.append('endif()')
+
+
+def emit_native_windows_libraries(lines, target, configs):
+    """The native GameUI resolver owns Winsock2; keep reference Win32 and POSIX selections unchanged."""
+    selections = [split(configs[name]['properties'].get('CseNativeWindowsLibraries', ''))
+                  for name in ('Debug', 'Release')]
+    if not any(selections):
+        return
+    if target != 'gameui' or selections != [['ws2_32.lib'], ['ws2_32.lib']]:
+        raise ValueError('Native Windows libraries require the exact GameUI Winsock2 Debug/Release selection')
+    lines.append('if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)')
+    lines.append('  target_link_libraries(gameui PRIVATE ws2_32.lib)')
+    lines.append('endif()')
+
+
+def emit_mac_dedicated_resources(lines, target, configs):
+    selections = [split(configs[name]['properties'].get('CseMacDedicatedResources', ''))
+                  for name in ('Debug', 'Release')]
+    if not any(selections):
+        return
+    if target != 'hlds' or selections[0] != selections[1]:
+        raise ValueError('Dedicated runtime resource selection must belong to hlds and match configurations')
+    resources = selections[0]
+    if len(set(resources)) != len(resources):
+        raise ValueError('Duplicate dedicated runtime resource')
+    lines.append('if(APPLE)')
+    lines.append('  cse_runtime_assets(hlds "platform/Admin"')
+    for resource in resources:
+        if not re.fullmatch(r'[A-Za-z0-9_]+\.(res|vdf|txt|html)', resource):
+            raise ValueError('Invalid dedicated resource name: ' + resource)
+        source = SDK / 'deploy/platform/Admin' / resource
+        if not source.is_file():
+            raise ValueError('Missing dedicated runtime resource: ' + str(source))
+        lines.append('    ' + quote(portable(str(source))))
+    lines.append('  )')
+    lines.append('endif()')
+
+
+def emit_mac_software_lifetime(lines, target, configs):
+    """Only the owning swds module may select its qualified private clipboard registry."""
+    values = [configs[config]['properties'].get('CseMacSoftwareLifetime', '') for config in ('Debug', 'Release')]
+    if values == ['', '']:
+        return
+    if target != 'swds' or values != ['1', '1']:
+        raise ValueError('CseMacSoftwareLifetime revision 1 requires the exact swds Debug/Release owner')
+    paths = ('common/TextEntryClipboard.cpp', 'engine/native_software_lifetime.cpp')
+    for config in ('Debug', 'Release'):
+        for relative in paths:
+            matches = [item for item in configs[config]['items']
+                       if item['kind'] == 'ClCompile' and Path(item['path']) == SDK / relative]
+            if len(matches) != 1 or matches[0]['metadata'].get('ExceptionHandling') != 'Sync':
+                raise ValueError('Software retirement requires both actual Sync owning translation units')
+            metadata = matches[0]['metadata']
+            if relative.startswith('engine/') and (metadata.get('CseTargetOS') != 'macos'
+                    or metadata.get('CsePointerWidth') != '64' or metadata.get('ExcludedFromBuild') != 'true'):
+                raise ValueError('Software terminal owner must be a mandatory macOS-native64 member')
+    lines.append('if(APPLE AND CMAKE_SIZEOF_VOID_P EQUAL 8)')
+    for relative in paths:
+        lines.append('  set_property(SOURCE "${CSE_SDK_DIR}/' + relative +
+                     '" APPEND PROPERTY COMPILE_DEFINITIONS CSE_TEXT_ENTRY_USE_PTHREAD_KEY=1)')
+    lines.append('endif()')
+
+
+def validate_apple_main_image_publisher(target, configs):
+    """The executable owning socket-v1 must publish it under both retained policies."""
+    key = 'CseAppleMainImagePublisher'
+    owner_path = SDK / 'launcher/native/SocketImageOwner.cpp'
+    selections = []
+    for configuration in ('Debug', 'Release'):
+        data = configs[configuration]
+        selected = []
+        for item in data['items']:
+            metadata = item['metadata']
+            requirement = metadata.get(key)
+            canonical = target in ('launcher', 'hlds') and Path(item['path']) == owner_path
+            if requirement is None and not canonical:
+                continue
+            if (requirement != 'socket-v1' or not canonical or item['kind'] != 'ClCompile'
+                    or data['properties']['ConfigurationType'] != 'Application'
+                    or metadata.get('CseTargetOS') != 'macos' or metadata.get('CsePointerWidth') != '64'
+                    or metadata.get('ExcludedFromBuild') != 'true' or metadata.get('CseReplaces')
+                    or metadata.get('CseNativeServices')):
+                raise ValueError('CseAppleMainImagePublisher socket-v1 requires its exact excluded macOS64 executable owner')
+            selected.append(cmake_source(item))
+        if (target in ('launcher', 'hlds') and len(selected) != 1) or len(selected) > 1:
+            raise ValueError('Missing/duplicate Apple main-image publisher owner')
+        selections.append(selected)
+    if selections[0] != selections[1]:
+        raise ValueError('Apple main-image publisher differs between configurations')
+
+
+def emit_platform_sources(lines, target, configs):
+    """Manifest-owned OS/width additions remain outside reference Win32 selections."""
+    validate_apple_main_image_publisher(target, configs)
+    predicates = {'macos': 'APPLE', 'windows': 'WIN32', 'linux': 'CMAKE_SYSTEM_NAME STREQUAL "Linux"',
+                  'posix': 'NOT WIN32'}
+    selections = []
+    selected_items = {}
+    for configuration in ('Debug', 'Release'):
+        selected = []
+        selected_items[configuration] = {}
+        reference_sources = {cmake_source(item) for item in configs[configuration]['items']
+                             if item['kind'] == 'ClCompile'
+                             and item['metadata'].get('ExcludedFromBuild') != 'true'}
+        for item in configs[configuration]['items']:
+            metadata = item['metadata']
+            platform = metadata.get('CseTargetOS')
+            width = metadata.get('CsePointerWidth')
+            objective_arc = metadata.get('CseObjectiveCArc')
+            if objective_arc is not None and (objective_arc != 'true' or platform != 'macos'
+                                               or Path(item['path']).suffix != '.mm'):
+                raise ValueError('CseObjectiveCArc requires an explicitly selected macos .mm source')
+            apple_framework = metadata.get('CseAppleFramework')
+            if apple_framework is not None and (platform != 'macos' or apple_framework != 'Cocoa'):
+                raise ValueError('Unsupported CseAppleFramework platform dependency')
+            if not platform and not width:
+                if metadata.get('CseReplaces'):
+                    raise ValueError('CseReplaces requires platform-only source ownership')
+                continue
+            if item['kind'] != 'ClCompile' or (platform and platform not in predicates):
+                raise ValueError('Unsupported CseTargetOS source metadata: ' + str(platform))
+            if width not in (None, '64'):
+                raise ValueError('Unsupported CsePointerWidth source metadata: ' + str(width))
+            if metadata.get('ExcludedFromBuild') != 'true':
+                raise ValueError('Platform-only source must be excluded from reference Win32 selection')
+            service = metadata.get('CseNativeServices', '')
+            if service in ('fonts', 'font-registration-owner', 'voice-mixer'):
+                valid_service = platform == 'macos'
+            elif service == 'browser':
+                valid_service = width == '64'
+            else:
+                valid_service = service == ''
+            if not valid_service:
+                raise ValueError('Unsupported CseNativeServices source metadata: ' + service)
+            path = cmake_source(item)
+            replacements = tuple(portable(str(source_path(value, ROOT)))
+                                 for value in split(metadata.get('CseReplaces', '')))
+            if any(value not in reference_sources for value in replacements):
+                raise ValueError('CseReplaces must name an active reference source: ' + str(replacements))
+            selected.append((platform, width, path, service, replacements))
+            selected_items[configuration][path] = item
+        selections.append(selected)
+    if selections[0] != selections[1]:
+        raise ValueError('Platform source membership differs between configurations')
+    for platform in (*predicates, None):
+        for width in (None, '64'):
+            selected = [(path, service, replacements) for os_name, bits, path, service, replacements in selections[0]
+                        if os_name == platform and bits == width]
+            if not selected:
+                continue
+            predicate = predicates.get(platform, '')
+            if width:
+                predicate += (' AND ' if predicate else '') + 'CMAKE_SIZEOF_VOID_P EQUAL 8'
+            lines.append('if(' + predicate + ')')
+            for path, service, replacements in selected:
+                if service == 'font-registration-owner':
+                    lines.append(f'  cse_define_mac_font_registration_service({quote(path)})')
+            for path, service, replacements in selected:
+                for replaced in replacements:
+                    # Source properties are scoped to this target's directory.
+                    # Keep the reference inventory while compiling exactly one backend.
+                    lines.append(f'  set_property(SOURCE {quote(replaced)} PROPERTY HEADER_FILE_ONLY TRUE)')
+                if service != 'font-registration-owner':
+                    lines.append(f'  target_sources({target} PRIVATE {quote(path)})')
+                    publisher = selected_items['Debug'][path]['metadata'].get('CseAppleMainImagePublisher')
+                    if publisher:
+                        lines.append(f'  cse_require_apple_main_image_publisher({target} {publisher})')
+                    objective_arc = selected_items['Debug'][path]['metadata'].get('CseObjectiveCArc') == 'true'
+                    if objective_arc != (selected_items['Release'][path]['metadata'].get('CseObjectiveCArc') == 'true'):
+                        raise ValueError('CseObjectiveCArc policy differs between configurations')
+                    if objective_arc:
+                        lines.append(f'  set_property(TARGET {target} PROPERTY OBJCXX_STANDARD 17)')
+                        lines.append(f'  set_property(TARGET {target} PROPERTY OBJCXX_STANDARD_REQUIRED YES)')
+                        lines.append(f'  set_property(TARGET {target} PROPERTY OBJCXX_EXTENSIONS NO)')
+                    apple_framework = selected_items['Debug'][path]['metadata'].get('CseAppleFramework')
+                    if apple_framework != selected_items['Release'][path]['metadata'].get('CseAppleFramework'):
+                        raise ValueError('CseAppleFramework policy differs between configurations')
+                    if apple_framework:
+                        lines.append(f'  target_link_libraries({target} PRIVATE "-framework {apple_framework}")')
+                    # These settings belong to the newly selected source, not its whole target.
+                    for configuration in ('Debug', 'Release'):
+                        overrides = selected_items[configuration][path].get('overrides', {})
+                        flags = options(overrides, COMPILE) + additional_options(overrides.get('AdditionalOptions', ''))
+                        if flags or objective_arc:
+                            lines.append('  if(MSVC)')
+                            for flag in flags:
+                                condition = option_predicate(configuration, flag)
+                                value = quote('$<' + condition + ':' + portable(flag) + '>')
+                                lines.append(f'    set_property(SOURCE {quote(path)} APPEND PROPERTY COMPILE_OPTIONS {value})')
+                            lines.append('  else()')
+                            policy = portable_game_settings(selected_items[configuration][path]['metadata'])
+                            for flag in policy['common'] + policy['cxx']:
+                                condition = option_predicate(configuration, flag)
+                                value = quote('$<' + condition + ':' + portable(flag) + '>')
+                                lines.append(f'    set_property(SOURCE {quote(path)} APPEND PROPERTY COMPILE_OPTIONS {value})')
+                            lines.append('  endif()')
+            if any(service == 'fonts' for _, service, _ in selected):
+                lines.append(f'  cse_link_native_font_services({target})')
+            if any(service == 'browser' for _, service, _ in selected):
+                lines.append(f'  cse_configure_native_browser({target})')
+            if any(service == 'voice-mixer' for _, service, _ in selected):
+                lines.append(f'  cse_link_native_voice_mixer({target})')
+            lines.append('endif()')
+
+
+def emit_portable_game_policy(lines, target, configs, project):
+    """Compiler/OS policy only; source membership is emitted once in Sources.cmake."""
+    lines.append(f'target_compile_features({target} PRIVATE cxx_std_17)')
+    # The retained Windows CRT names are owned by one tested POSIX boundary.
+    # Group -include with its operand so CMake option de-duplication cannot
+    # detach another per-file forced include from this header.
+    forced_include = quote('SHELL:-include "${CSE_SDK_DIR}/public/cse_posix_crt.h"')
+    lines.append(f'target_compile_options({target} PRIVATE {forced_include})')
+    lines.extend(['if(APPLE)', f'  target_compile_definitions({target} PRIVATE OSX POSIX)', 'endif()'])
+    if any(data['properties'].get('WholeProgramOptimization') == 'true' for data in configs.values()):
+        lines.append(f'target_compile_options({target} PRIVATE "$<$<CONFIG:Release>:-flto>")')
+        lines.append(f'target_link_options({target} PRIVATE "$<$<CONFIG:Release>:-flto>")')
+    lines.extend(['if(APPLE)', f'  target_link_options({target} PRIVATE "-Wl,-no_deduplicate")', 'endif()'])
+    semantic_keys = {'ExceptionHandling', 'FloatingPointModel', 'RuntimeTypeInfo', 'Optimization',
+                     'LanguageStandard', 'AdditionalOptions', 'DebugInformationFormat'}
+    for config, data in configs.items():
+        metadata = data['definitions']['ClCompile']
+        policy = portable_game_settings(metadata)
+        emit_list(lines, 'target_compile_options', target, config, policy['common'], language=True)
+        if policy['symbols']:
+            if config == 'Debug':
+                emit_list(lines, 'target_compile_options', target, config, ['-g'], language=True)
+            else:
+                lines.append(f'target_compile_options({target} PRIVATE '
+                             '"$<$<AND:$<CONFIG:Release>,$<BOOL:${CSE_RELEASE_DIAGNOSTICS}>>:-g>")')
+        for option in policy['cxx']:
+            predicate = f'$<AND:$<CONFIG:{config}>,$<COMPILE_LANGUAGE:CXX>>'
+            lines.append(f'target_compile_options({target} PRIVATE {quote("$<" + predicate + ":" + option + ">")})')
+        emit_list(lines, 'target_compile_definitions', target, config, policy['definitions'])
+        includes = [str(source_path(path, project.parent))
+                    for path in split(metadata.get('AdditionalIncludeDirectories', ''))]
+        includes = [path for path in includes if path != data.get('mpg123', {}).get('include_root')]
+        emit_list(lines, 'target_include_directories', target, config, includes)
+        link = data['definitions'].get('Link', {})
+        lib_dirs = [source_path(path, project.parent)
+                    for path in split(link.get('AdditionalLibraryDirectories', ''))]
+        libraries = split(link.get('AdditionalDependencies', '')) + [
+            item['path'] for item in data['items'] if item['kind'] == 'Library']
+        for library in libraries:
+            leaf = Path(library.replace('\\', '/')).stem.lower()
+            if leaf in SYSTEM_LIBS and '/' not in library and '\\' not in library:
+                if leaf == 'opengl32':
+                    emit_list(lines, 'target_link_libraries', target, config, ['-framework OpenGL'])
+                continue
+            if '/' in library or '\\' in library:
+                path = source_path(library, project.parent)
+            else:
+                matches = [source_path(library, directory) for directory in lib_dirs
+                           if source_path(library, directory).is_file()]
+                if not matches:
+                    raise ValueError('Unresolved portable library: ' + library)
+                path = matches[0]
+            lines.append(import_command(target, config, path, data))
+        for item in data['items']:
+            if item['kind'] != 'ClCompile' or item['metadata'].get('ExcludedFromBuild') == 'true':
+                continue
+            overrides = item['overrides']
+            path = quote(cmake_source(item))
+            if semantic_keys.intersection(overrides):
+                effective = portable_game_settings(item['metadata'])
+                for option in effective['common'] + effective['cxx']:
+                    lines.append(f'set_property(SOURCE {path} APPEND PROPERTY COMPILE_OPTIONS '
+                                 f'{quote("$<$<CONFIG:" + config + ">:" + option + ">")})')
+            if ('DebugInformationFormat' in overrides or 'AdditionalOptions' in overrides):
+                symbols = portable_game_settings(item['metadata'])['symbols']
+                if symbols:
+                    condition = f'$<CONFIG:{config}>'
+                    if config == 'Release':
+                        condition = '$<AND:$<CONFIG:Release>,$<BOOL:${CSE_RELEASE_DIAGNOSTICS}>>'
+                    lines.append(f'set_property(SOURCE {path} APPEND PROPERTY COMPILE_OPTIONS '
+                                 f'{quote("$<" + condition + ":-g>")})')
+            if overrides.get('CompileAs') == 'CompileAsCpp' and config == 'Debug':
+                lines.append(f'set_property(SOURCE {path} PROPERTY LANGUAGE CXX)')
+            for include in split(overrides.get('ForcedIncludeFiles', '')):
+                include = portable(str(source_path(include, project.parent)))
+                for option in ('-include', include):
+                    lines.append(f'set_property(SOURCE {path} APPEND PROPERTY COMPILE_OPTIONS '
+                                 f'{quote("$<$<CONFIG:" + config + ">:" + option + ">")})')
+            if 'PreprocessorDefinitions' in overrides:
+                for value in portable_game_settings(item['metadata'])['definitions']:
+                    lines.append(f'set_property(SOURCE {path} APPEND PROPERTY COMPILE_DEFINITIONS '
+                                 f'{quote("$<$<CONFIG:" + config + ">:" + value + ">")})')
+            if 'AdditionalIncludeDirectories' in overrides:
+                for include in split(item['metadata']['AdditionalIncludeDirectories']):
+                    include = portable(str(source_path(include, project.parent)))
+                    lines.append(f'set_property(SOURCE {path} APPEND PROPERTY INCLUDE_DIRECTORIES '
+                                 f'{quote("$<$<CONFIG:" + config + ">:" + include + ">")})')
+
+
 def main():
     validate_payload(SDK / 'external/SDL3')
     records = []
@@ -386,7 +731,7 @@ def main():
                 'Generated by `python3 tools/translate_msbuild.py` from retained repository manifests.',
                 'Repository imports, conditions and per-file metadata are expanded for Debug/Release Win32.',
                 'This source crosswalk does not perform Microsoft toolchain/user-default evaluation or compilation.',
-                'See [music validation](mpg123-migration-validation.md) for current qualification; [SDL3 validation](sdl3-migration-validation.md) records the earlier snapshot.',
+                'See the [build reference](building.md) for supported platforms, dependencies and commands.',
                 'The original byte-for-byte manifests are preserved in `msbuild/upstream-manifests.zip`.', '',
                 'Each target has its own CMake directory, so source-specific settings cannot leak across targets.',
                 'Exact selections and metadata are in `msbuild/repository-selections.json`; generated target modules are under `cmake/targets/`.', '',
@@ -406,6 +751,14 @@ def main():
             return ('generated', Path(item['path']).name, item['generated']['section']) if item.get('generated') else item['path']
         assert [selection(i) for i in compiled(debug)] == [selection(i) for i in compiled(release)], project
         active = compiled(release)
+        if target in ('hw_engine', 'swds', 'hl_server', 'cs_server') and any(
+                Path(i['path']).name in ('sys_dll.cpp', 'saved_callbacks.cpp') for i in active):
+            generate_game_module_layouts(ROOT)
+        if target in ('hl_server', 'cs_server'):
+            generate_callback_catalog(ROOT, target, [Path(i['path']) for i in active])
+        if target in ('hw_engine', 'swds', 'hl_client', 'cs_client') and any(
+                Path(i['path']).name == 'cdll_int.cpp' for i in active):
+            generate_client_module_layouts(ROOT)
         output = release['properties'].get('TargetName', project.stem)
         kind = 'EXECUTABLE' if release['properties']['ConfigurationType'] == 'Application' else 'SHARED'
         lines = ['# Generated from ' + str(project.relative_to(SDK)) + '; see tools/translate_msbuild.py.',
@@ -419,8 +772,23 @@ def main():
             if item['kind'] in ['ClCompile', 'ResourceCompile'] and item['metadata'].get('ExcludedFromBuild') != 'true':
                 if not item.get('generated'):
                     assert Path(item['path']).is_file(), item['path']
-                lines.append('  ' + quote(cmake_source(item)))
+                if item['kind'] == 'ClCompile':
+                    lines.append('  ' + quote(cmake_source(item)))
         lines.append(')')
+        resources = [item for item in release['items'] if item['kind'] == 'ResourceCompile'
+                     and item['metadata'].get('ExcludedFromBuild') != 'true']
+        if resources:
+            lines.extend(['if(WIN32)', f'  target_sources({target} PRIVATE'])
+            lines.extend('    ' + quote(cmake_source(item)) for item in resources)
+            lines.extend(['  )', 'endif()'])
+        emit_platform_sources(lines, target, configs)
+        emit_mac_software_lifetime(lines, target, configs)
+        portable_policy = True
+        if portable_policy:
+            sources = ROOT / 'cmake/targets' / target / 'Sources.cmake'
+            sources.parent.mkdir(parents=True, exist_ok=True)
+            sources.write_text(lines[0] + '\n' + '\n'.join(lines[2:]) + '\n')
+            lines = lines[:2] + ['include("${CMAKE_CURRENT_LIST_DIR}/Sources.cmake")', 'if(MSVC)']
         for config, data in configs.items():
             m = data['definitions']['ClCompile']; link = data['definitions'].get('Link', {})
             overridden_flags = {k for item in compiled(data) for k in item['overrides'] if k in COMPILE}
@@ -434,7 +802,7 @@ def main():
                 flags.append('/MP' + m.get('ProcessorNumber', ''))
             if m.get('EnablePREfast') == 'true':
                 flags.append('/analyze')
-            if m.get('DisableAnalyzeExternal') == 'true':
+            if m.get('EnablePREfast') == 'true' and m.get('DisableAnalyzeExternal') == 'true':
                 flags.append('/analyze:external-')
             emit_list(lines, 'target_compile_options', target, config, flags, language=True)
             if m.get('LanguageStandard'):
@@ -455,7 +823,7 @@ def main():
             if link.get('BaseAddress'):
                 link_flags.append('/BASE:' + link['BaseAddress'])
             if link.get('EnableUAC') == 'true':
-                link_flags.append('/MANIFESTUAC:level=asInvoker')
+                link_flags.append("/MANIFESTUAC:level='asInvoker'")
             if data['properties'].get('GenerateManifest') == 'false':
                 link_flags.append('/MANIFEST:NO')
             if link.get('GenerateMapFile') == 'true':
@@ -464,7 +832,24 @@ def main():
             if link.get('ModuleDefinitionFile'):
                 definition = source_path(link['ModuleDefinitionFile'], project.parent)
                 assert definition.is_file(), definition
-                lines.append(f'target_sources({target} PRIVATE {quote(portable(str(definition)))})') if config == 'Debug' else None
+                if config == 'Debug':
+                    if link.get('CseNativeCppExports') not in (None, 'true'):
+                        raise ValueError('Unsupported native C++ export policy: ' + link['CseNativeCppExports'])
+                    if target in ('hl_server', 'cs_server') or link.get('CseNativeCppExports') == 'true':
+                        native = ROOT / 'cmake/exports' / (target + '.def')
+                        native.parent.mkdir(parents=True, exist_ok=True)
+                        native.write_text('; Generated by tools/translate_msbuild.py from ' +
+                                          str(definition.relative_to(SDK)) + '\n' +
+                                          native_definition(definition.read_text()))
+                        lines.append(f'cse_game_module_exports({target} {quote(portable(str(definition)))} '
+                                     f'"${{CSE_ROOT}}/cmake/exports/{target}.def")')
+                    elif link.get('CseModuleDefinitionArchitecture') == 'x86':
+                        lines.append(f'cse_win32_module_definition({target} {quote(portable(str(definition)))})')
+                    else:
+                        if link.get('CseModuleDefinitionArchitecture'):
+                            raise ValueError('Unsupported module definition architecture: ' +
+                                             link['CseModuleDefinitionArchitecture'])
+                        lines.append(f'target_sources({target} PRIVATE {quote(portable(str(definition)))})')
             lib_dirs = [source_path(p, project.parent) for p in split(link.get('AdditionalLibraryDirectories', ''))]
             libraries = split(link.get('AdditionalDependencies', '')) + [i['path'] for i in data['items'] if i['kind'] == 'Library']
             for lib in libraries:
@@ -502,7 +887,15 @@ def main():
                     # Per-file paths must precede target includes; MSBuild uses the same ordering.
                     paths = [portable(str(source_path(p, project.parent))) for p in split(item['metadata']['AdditionalIncludeDirectories'])]
                     for inc in paths:
-                        lines.append(f'set_property(SOURCE {path} APPEND PROPERTY INCLUDE_DIRECTORIES {quote("$<$<CONFIG:" + config + ">:" + inc + ">")})')
+                        dependency_include = '${CSE_SDK_DIR}/external/installed/x86-windows-static-md/include'
+                        if inc == dependency_include or inc.startswith(dependency_include + '/'):
+                            lines.append(f'cse_source_dependency_include({path} {config} {quote(inc)})')
+                        else:
+                            lines.append(f'set_property(SOURCE {path} APPEND PROPERTY INCLUDE_DIRECTORIES {quote("$<$<CONFIG:" + config + ">:" + inc + ">")})')
+        if portable_policy:
+            lines.append('else()')
+            emit_portable_game_policy(lines, target, configs, project)
+            lines.append('endif()')
         for item in release['items']:
             if item['kind'] == 'ProjectReference':
                 dep = TARGETS[Path(item['path']).stem]
@@ -510,7 +903,12 @@ def main():
         subdir = {'cs_client': 'cstrike/cl_dlls', 'cs_server': 'cstrike/dlls',
                   'hl_client': 'valve/cl_dlls', 'hl_server': 'valve/dlls',
                   'gameui': 'valve/cl_dlls', 'particleman': 'valve/cl_dlls'}.get(target, '')
+        record['runtime'] = {'kind': kind, 'name': output, 'directory': subdir}
         lines.append(f'cse_runtime_directory({target} {quote(subdir)})')
+        emit_native_module_aliases(lines, target, configs)
+        emit_native_sdl3_dependency(lines, target, configs)
+        emit_mac_dedicated_resources(lines, target, configs)
+        emit_native_windows_libraries(lines, target, configs)
         if target == 'vgui':
             lines.append('cse_vgui_import_archive()')
         dest = ROOT / 'cmake/targets' / target / 'CMakeLists.txt'

@@ -1,3 +1,4 @@
+#include "native_platform.h"
 #include "A3d3.h"
 #include "A3dSource.h"
 #include "ChunkPage.h"
@@ -41,7 +42,7 @@ void CA3d::RenderSources()
 	Matrix_Inverse( rightListener, inverseRight );
 	Matrix_GetTranslation( centerListener, m_vWorldListenerPosition );
 	GetListenerVelocity( listenerVelocity );
-	DWORD dwTick = timeGetTime();
+	DWORD dwTick = A3dMonotonicMilliseconds();
 	BOOL bUpdate = dwTick - m_dwLastUpdateTick >= m_dwUpdateTickPeriod;
 	if ( bUpdate )
 		m_dwLastUpdateTick = dwTick;
@@ -433,8 +434,15 @@ void CA3d::RenderSourceGeometry( CA3dSource* pSource )
 				}
 			}
 
-			if ( bVisible )
-				pSource->AddReflection( pPrimitive->m_dwTag, reflectedDirection, 1.0f, m_MaterialProperties );
+            if (bVisible) {
+#if UINTPTR_MAX > UINT32_MAX
+                const auto commandIndex = m_pCurrentCommand - m_pCommandBuffer->m_pCommands;
+                pSource->AddGeometryReflection(m_pCommandBuffer->m_pIdentities[commandIndex],
+                    pPrimitive->m_dwTag, reflectedDirection, 1.0f, m_MaterialProperties);
+#else
+                pSource->AddReflection(pPrimitive->m_dwTag, reflectedDirection, 1.0f, m_MaterialProperties);
+#endif
+            }
 		}
 
 		++m_dwPolygonTestCount;

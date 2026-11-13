@@ -1,5 +1,9 @@
 // cl_main.c  -- client main loop
+#if defined(_WIN32)
 #include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#endif
 
 #include "client.h"
 #include "pm_defs.h"
@@ -15,6 +19,8 @@
 #include "sound.h"
 #include "voice.h"
 #include "vgui_intwrap2.h"
+#include "../public/native_gameui_connection.h"
+#include "interface.h"
 #include "zone.h"
 #include "../common/dlight.h"
 #include "render.h"
@@ -35,6 +41,39 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+#if INTPTR_MAX > INT32_MAX
+namespace {
+const char* preparingConnectionAddress = nullptr;
+
+class ConnectionPreparationScope final {
+public:
+    explicit ConnectionPreparationScope(const char* address) : previous_(preparingConnectionAddress) {
+        preparingConnectionAddress = address;
+    }
+    ~ConnectionPreparationScope() {
+        preparingConnectionAddress = previous_;
+    }
+    ConnectionPreparationScope(const ConnectionPreparationScope&) = delete;
+    ConnectionPreparationScope& operator=(const ConnectionPreparationScope&) = delete;
+
+private:
+    const char* previous_;
+};
+
+const char* CSE_ABI_CALL PreparingConnectionAddress() {
+    return preparingConnectionAddress;
+}
+
+const cse::gameui_connection::HostV1 connectionHost{
+    sizeof(cse::gameui_connection::HostV1), cse::gameui_connection::ContractVersion, PreparingConnectionAddress};
+
+void* ConnectionHostFactory() {
+    return const_cast<cse::gameui_connection::HostV1*>(&connectionHost);
+}
+}
+EXPOSE_INTERFACE_FN(ConnectionHostFactory, CSEGameUIConnectionHost, cse::gameui_connection::HostInterface);
+#endif
 
 #define MAX_STARTUP_TIMINGS 32
 #define MAX_CACHED_SERVERS 16
@@ -864,7 +903,11 @@ void CL_Connect_f()
 		return;
 
 	Q_strncpy( name, server, sizeof( name ) );
-	name[sizeof( name ) - 1] = 0;
+    name[sizeof(name) - 1] = 0;
+
+#if INTPTR_MAX > INT32_MAX
+    const ConnectionPreparationScope preparation(name);
+#endif
 
 	if ( cls.demoplayback )
 		CL_StopPlayback();
@@ -1119,8 +1162,14 @@ void CL_SendConnectPacket()
 		if ( adr.type == NA_LOOPBACK )
 			ip = htonl( 0x7f000001 );
 
-		keySize = (size_t)Steam_GSInitiateGameConnection(
-			steamKey, sizeof( steamKey ), cls.GameServerSteamID, ip, adr.port, cls.isVAC2Secure );
+        const int steamKeyBytes = Steam_GSInitiateGameConnection(
+            steamKey, sizeof(steamKey), cls.GameServerSteamID, ip, adr.port, cls.isVAC2Secure);
+        if (steamKeyBytes <= 0 || steamKeyBytes > static_cast<int>(sizeof(steamKey))) {
+            Con_Printf("Unable to obtain a valid Steam connection ticket.\n");
+            CL_Disconnect_f();
+            return;
+        }
+        keySize = static_cast<size_t>(steamKeyBytes);
 	}
 
 	cls.connect_time = realtime;

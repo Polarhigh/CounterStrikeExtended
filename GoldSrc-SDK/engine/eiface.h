@@ -16,6 +16,9 @@
 #define EIFACE_H
 
 #include "archtypes.h"     // DAL
+#include "cse_string.h"
+#include "cse_symbol.h"
+#include "cse_entity.h"
 
 #ifdef HLDEMO_BUILD
 #define INTERFACE_VERSION       001
@@ -24,6 +27,7 @@
 #endif // !HLDEMO_BUILD
 
 #include <stdio.h>
+#include <stddef.h>
 #include "custom.h"
 #include "cvardef.h"
 #include "Sequence.h"
@@ -136,7 +140,7 @@ typedef struct enginefuncs_s
 	void		(*pfnAngleVectors)			(const float *rgflVector, float *forward, float *right, float *up);
 	edict_t*	(*pfnCreateEntity)			(void);
 	void		(*pfnRemoveEntity)			(edict_t* e);
-	edict_t*	(*pfnCreateNamedEntity)		(int className);
+	edict_t*	(*pfnCreateNamedEntity)		(string_t className);
 	void		(*pfnMakeStatic)			(edict_t *ent);
 	int			(*pfnEntIsOnFloor)			(edict_t *e);
 	int			(*pfnDropToFloor)			(edict_t* e);
@@ -176,14 +180,14 @@ typedef struct enginefuncs_s
 	void		(*pfnCVarSetString)			(const char *szVarName, const char *szValue);
 	void		(*pfnAlertMessage)			(ALERT_TYPE atype, char *szFmt, ...);
 	void		(*pfnEngineFprintf)			(void *pfile, char *szFmt, ...);
-	void*		(*pfnPvAllocEntPrivateData)	(edict_t *pEdict, int32 cb);
+    void *(*pfnPvAllocEntPrivateData)(edict_t *pEdict, size_t bytes);
 	void*		(*pfnPvEntPrivateData)		(edict_t *pEdict);
 	void		(*pfnFreeEntPrivateData)	(edict_t *pEdict);
-	const char*	(*pfnSzFromIndex)			(int iString);
-	int			(*pfnAllocString)			(const char *szValue);
+	const char*	(*pfnSzFromIndex)			(string_t iString);
+	string_t		(*pfnAllocString)			(const char *szValue);
 	struct entvars_s*	(*pfnGetVarsOfEnt)			(edict_t *pEdict);
-	edict_t*	(*pfnPEntityOfEntOffset)	(int iEntOffset);
-	int			(*pfnEntOffsetOfPEntity)	(const edict_t *pEdict);
+	edict_t*	(*pfnPEntityOfEntOffset)	(EOFFSET iEntOffset);
+	EOFFSET		(*pfnEntOffsetOfPEntity)	(const edict_t *pEdict);
 	int			(*pfnIndexOfEdict)			(const edict_t *pEdict);
 	edict_t*	(*pfnPEntityOfEntIndex)		(int iEntIndex);
 	edict_t*	(*pfnFindEntityByVars)		(struct entvars_s* pvars);
@@ -191,8 +195,8 @@ typedef struct enginefuncs_s
 	int			(*pfnRegUserMsg)			(const char *pszName, int iSize);
 	void		(*pfnAnimationAutomove)		(const edict_t* pEdict, float flTime);
 	void		(*pfnGetBonePosition)		(const edict_t* pEdict, int iBone, float *rgflOrigin, float *rgflAngles );
-	uint32 (*pfnFunctionFromName)	( const char *pName );
-	const char *(*pfnNameForFunction)		( uint32 function );
+    CseSymbolAddress (*pfnFunctionFromName)(const char *pName);
+    const char *(*pfnNameForFunction)(CseSymbolAddress function);
 	void		(*pfnClientPrintf)			( edict_t* pEdict, PRINT_TYPE ptype, const char *szMsg ); // JOHN: engine callbacks so game DLL can print messages to individual clients
 	void		(*pfnServerPrint)			( const char *szMsg );
 	const char *(*pfnCmd_Args)				( void );		// these 3 added 
@@ -256,7 +260,7 @@ typedef struct enginefuncs_s
 
 	void		(*pfnSetGroupMask)			( int mask, int op );
 
-	int			(*pfnCreateInstancedBaseline) ( int classname, struct entity_state_s *baseline );
+	int			(*pfnCreateInstancedBaseline) ( string_t classname, struct entity_state_s *baseline );
 	void		(*pfnCvar_DirectSet)		( struct cvar_s *var, char *value );
 
 	// Forces the client and server to be running with the same version of the specified file
@@ -305,6 +309,8 @@ typedef struct enginefuncs_s
 	int (*pfnCheckParm)( const char *pchCmdLineToken, char **ppnext );
 
 	edict_t*	(*pfnPEntityOfEntIndexAllEntities)		(int iEntIndex);
+    // Owned runtime extension; returns zero when absent and an allocated native string otherwise.
+    string_t (*pfnGetWorldspawnString)(const char *key);
 } enginefuncs_t;
 
 
@@ -397,7 +403,7 @@ typedef enum _fieldtypes
 	FIELD_EDICT,			// edict_t *, or edict_t *  (same thing)
 	FIELD_VECTOR,			// Any vector
 	FIELD_POSITION_VECTOR,	// A world coordinate (these are fixed up across level transitions automagically)
-	FIELD_POINTER,			// Arbitrary data pointer... to be removed, use an array of FIELD_CHARACTER
+	FIELD_POINTER,			// Reserved legacy value; owned save metadata rejects raw pointers.
 	FIELD_INTEGER,			// Any integer or enum
 	FIELD_FUNCTION,			// A class function pointer (Think, Use, etc)
 	FIELD_BOOLEAN,			// boolean, implemented as an int, I may use this as a hint for compression
@@ -414,7 +420,40 @@ typedef enum _fieldtypes
 #define offsetof(s,m)	(size_t)&(((s *)0)->m)
 #endif
 
-#define _FIELD(type,name,fieldtype,count,flags)		{ fieldtype, #name, offsetof(type, name), count, flags }
+#include "../common/save_field_storage.h"
+
+#ifdef __cplusplus
+template<typename Storage, FIELDTYPE Kind>
+constexpr unsigned int CseSaveNativeStride() {
+    constexpr auto stride = cse::save::NativeStorageTraits<Storage>::Stride;
+    static_assert(Kind != FIELD_POINTER, "Raw pointers require a symbolic save representation");
+    static_assert(stride <= UINT32_MAX, "Native save-field stride exceeds its descriptor width");
+    static_assert((Kind != FIELD_STRING && Kind != FIELD_MODELNAME && Kind != FIELD_SOUNDNAME)
+                      || stride == sizeof(string_t),
+                  "Saved engine strings must use native string_t storage");
+    static_assert(Kind != FIELD_ENTITY || stride == sizeof(EOFFSET),
+                  "Saved entity offsets must use native EOFFSET storage");
+    return static_cast<unsigned int>(Kind == FIELD_CHARACTER ? sizeof(char)
+        : ((Kind == FIELD_VECTOR || Kind == FIELD_POSITION_VECTOR)
+            ? sizeof(float) * CSE_SAVE_VECTOR_COMPONENTS : stride));
+}
+
+#define CSE_SAVE_NATIVE_STRIDE(type, name, fieldtype, count) \
+    CseSaveNativeStride<decltype(((type *)nullptr)->name), fieldtype>()
+#define CSE_SAVE_NATIVE_FLAGS(type, name) \
+    cse::save::NativeStorageTraits<decltype(((type *)nullptr)->name)>::Flags
+#else
+#define CSE_SAVE_NATIVE_STRIDE(type, name, fieldtype, count) \
+    ((fieldtype) == FIELD_CHARACTER ? sizeof(char) \
+        : (((fieldtype) == FIELD_VECTOR || (fieldtype) == FIELD_POSITION_VECTOR) \
+            ? sizeof(float) * CSE_SAVE_VECTOR_COMPONENTS : sizeof(((type *)0)->name) / (count)))
+#define CSE_SAVE_NATIVE_FLAGS(type, name) 0
+#endif
+
+#define _FIELD(type, name, fieldtype, count, flags) \
+    { fieldtype, #name, offsetof(type, name), count, flags, \
+        CSE_SAVE_NATIVE_STRIDE(type, name, fieldtype, count), CSE_SAVE_NATIVE_FLAGS(type, name), \
+        sizeof(((type *)0)->name) }
 #define DEFINE_FIELD(type,name,fieldtype)			_FIELD(type, name, fieldtype, 1, 0)
 #define DEFINE_ARRAY(type,name,fieldtype,count)		_FIELD(type, name, fieldtype, count, 0)
 #define DEFINE_ENTITY_FIELD(name,fieldtype)			_FIELD(entvars_t, name, fieldtype, 1, 0 )
@@ -426,11 +465,15 @@ typedef enum _fieldtypes
 
 typedef struct 
 {
-	FIELDTYPE		fieldType;
-	char			*fieldName;
-	int				fieldOffset;
-	short			fieldSize;
-	short			flags;
+    FIELDTYPE fieldType;
+    const char *fieldName;
+    int fieldOffset;
+    short fieldSize;
+    short flags;
+    // Native storage facts never change the legacy field's encoded width.
+    unsigned int nativeStride;
+    unsigned int nativeFlags;
+    unsigned int nativeBytes;
 } TYPEDESCRIPTION;
 
 #ifndef ARRAYSIZE
@@ -548,4 +591,4 @@ extern NEW_DLL_FUNCTIONS	gNewDLLFunctions;
 typedef int	(*APIFUNCTION)( DLL_FUNCTIONS *pFunctionTable, int interfaceVersion );
 typedef int	(*APIFUNCTION2)( DLL_FUNCTIONS *pFunctionTable, int *interfaceVersion );
 
-#endif EIFACE_H
+#endif // EIFACE_H

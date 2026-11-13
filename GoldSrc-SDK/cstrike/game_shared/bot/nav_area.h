@@ -7,7 +7,9 @@
 
 #undef min
 #undef max
+#include <cstdint>
 #include <list>
+#include "native_int_count.h"
 #include "nav.h"
 #include "steam_util.h"
 
@@ -32,17 +34,22 @@ enum RouteType
 
 //-------------------------------------------------------------------------------------------------------------------
 /**
- * The NavConnect union is used to refer to connections to areas
+ * Saved area IDs and resolved native pointers have separate lifetimes.
  */
-union NavConnect
-{
-	unsigned int id;
-	CNavArea *area;
+struct NavConnect {
+    static constexpr std::uint32_t NoAreaId = 0;
+    std::uint32_t id = NoAreaId;
+    CNavArea *area = nullptr;
 
-	bool operator==( const NavConnect &other ) const
-	{
-		return (area == other.area) ? true : false;
-	}
+    template<typename Lookup>
+    bool Resolve(Lookup lookup) {
+        area = lookup(id);
+        return id == NoAreaId || area != nullptr;
+    }
+
+    bool operator==(const NavConnect &other) const {
+        return area == other.area;
+    }
 };
 typedef std::list<NavConnect> NavConnectList;
 
@@ -166,14 +173,16 @@ extern HidingSpot *GetHidingSpotByID( unsigned int id );
 /**
  * Stores a pointer to an interesting "spot", and a parametric distance along a path
  */
-struct SpotOrder
-{
-	float t;								///< parametric distance along ray where this spot first has LOS to our path
-	union
-	{
-		HidingSpot *spot;					///< the spot to look at
-		unsigned int id;					///< spot ID for save/load
-	};
+struct SpotOrder {
+    float t = 0.0f; // Parametric distance where this spot first has line of sight to the path.
+    HidingSpot *spot = nullptr;
+    std::uint32_t id = 0; // Fixed-width saved identity, retained after native resolution.
+
+    template<typename Lookup>
+    bool Resolve(Lookup lookup) {
+        spot = lookup(id);
+        return spot != nullptr;
+    }
 };
 typedef std::list<SpotOrder> SpotOrderList;
 
@@ -241,7 +250,9 @@ public:
 
 	bool IsEdge( NavDirType dir ) const;						///< return true if there are no bi-directional links on the given side
 
-	int GetAdjacentCount( NavDirType dir ) const	{ return m_connect[ dir ].size(); }	///< return number of connected areas in given direction
+    int GetAdjacentCount(NavDirType dir) const {
+        return cse::counts::IntCount(m_connect[dir].size());
+    }
 	CNavArea *GetAdjacentArea( NavDirType dir, int i ) const;	/// return the i'th adjacent area in the given direction
 	CNavArea *GetRandomAdjacentArea( NavDirType dir ) const;
 
@@ -1223,7 +1234,7 @@ CNavArea *FindMinimumCostArea( CNavArea *startArea, CostFunctor &costFunc )
 	else
 	{
 		// degenerate case - no decent sized areas - pick a random area
-		int numAreas = TheNavAreaList.size();
+		const int numAreas = cse::counts::IntCount(TheNavAreaList.size());
 		int which = RANDOM_LONG( 0, numAreas-1 );
 
 		for( iter = TheNavAreaList.begin(); iter != TheNavAreaList.end(); ++iter )

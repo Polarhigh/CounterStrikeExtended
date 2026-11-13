@@ -1,12 +1,20 @@
 #include "public/tier1/interface.h"
+#include "../public/native_module.h"
+#include "../public/native_restart_command_line.h"
 #include "public/engine_launcher_api.h"
 #include "public/filesystem.h"
+#include "../public/native_filesystem_module.h"
 #include "common/icommandline.h"
 #include "public/iregistry.h"
+#if defined(__APPLE__) && defined(CSE_NATIVE_RUNTIME_BOOTSTRAP)
+#include "native/MacRuntimeSession.h"
+#endif
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
+#include <algorithm>
 #include <locale.h>
 
 #if defined(_WIN32)
@@ -22,8 +30,12 @@
 #define LAUNCHER_SOURCE_PATH	L"c:\\buildslave\\goldsrc_win32\\build\\GoldSrc\\launcher\\launcher.cpp"
 #else
 #include <dlfcn.h>
+#include <stdexcept>
 #include <strings.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 struct CSysModule;
@@ -33,7 +45,7 @@ namespace
 #define GAME_DIRECTORY_LENGTH		260
 #define MODULE_RETRY_LENGTH			512
 #define EXECUTABLE_LEAF_LENGTH		256
-#define NEW_COMMAND_LENGTH			2048
+#define NEW_COMMAND_LENGTH             cse_restart::GeneratedCommandCapacity
 #define LAUNCHER_MESSAGE_LENGTH		216
 
 #define DEFAULT_DISPLAY_WIDTH		800
@@ -50,7 +62,11 @@ namespace
 #define LAUNCHER_PATH_SEPARATOR		( (char)'\\' )
 
 const char kHardwareEngine[] = "hw.dll";
+#if INTPTR_MAX > INT32_MAX
+const char kSoftwareEngine[] = "swds.dll";
+#else
 const char kSoftwareEngine[] = "sw.dll";
+#endif
 const char kFileSystemModule[] = "filesystem_stdio.dll";
 const char kThisExecutable[] = "hl.exe";
 const char kLauncherMutex[] = "ValveHalfLifeLauncherMutex";
@@ -62,10 +78,17 @@ const char kSteamRegistryKey[] = "Software\\Valve\\Steam";
 #define ENGINE_UNLOAD_ATTEMPT_LIMIT	9
 #define LAUNCHER_PATH_SEPARATOR		( (char)'/' )
 
+#if defined(__APPLE__)
+const char kHardwareEngine[] = "hw.dylib";
+const char kSoftwareEngine[] = "swds.dylib";
+const char kFileSystemModule[] = "filesystem_stdio.dylib";
+const char kThisExecutable[] = "hl";
+#else
 const char kHardwareEngine[] = "hw.so";
 const char kSoftwareEngine[] = "sw.so";
 const char kFileSystemModule[] = "filesystem_stdio.so";
 const char kThisExecutable[] = "hl_linux";
+#endif
 #endif
 
 const char kDefaultGame[] = "valve";
@@ -78,6 +101,25 @@ IFileSystem*	g_pFileSystem = NULL;
 
 namespace
 {
+#if defined(__APPLE__)
+std::vector<std::string> nativeArguments;
+
+void RemoveNativeParameter(const char* parameter) {
+    for (std::size_t index = 1; index < nativeArguments.size();) {
+        if (nativeArguments[index] != parameter) {
+            ++index;
+            continue;
+        }
+        std::size_t end = index + 1;
+        while (end < nativeArguments.size() && (nativeArguments[end].empty() ||
+            (nativeArguments[end][0] != '-' && nativeArguments[end][0] != '+'))) {
+            ++end;
+        }
+        nativeArguments.erase(nativeArguments.begin() + index, nativeArguments.begin() + end);
+    }
+}
+#endif
+
 int CaseCompare( const char* left, const char* right )
 {
 #if defined(_WIN32)
@@ -87,6 +129,7 @@ int CaseCompare( const char* left, const char* right )
 #endif
 }
 
+#if !defined(__APPLE__)
 void* LoadModuleHandle( const char* name )
 {
 #if defined(_WIN32)
@@ -95,6 +138,8 @@ void* LoadModuleHandle( const char* name )
 	return dlopen( name, RTLD_NOW );
 #endif
 }
+
+#endif
 
 void UnloadModuleHandle( void* module )
 {
@@ -128,7 +173,12 @@ const char* SelectEngineDll()
 	{
 		selected = kHardwareEngine;
 	}
-	else if ( CaseCompare( stored, kSoftwareEngine ) == 0 )
+	else if ( CaseCompare( stored, kSoftwareEngine ) == 0
+#if defined(__APPLE__)
+        // The engine's retained video settings persist the Win32 renderer names.
+        || CaseCompare(stored, "sw.dll") == 0
+#endif
+    )
 	{
 		selected = kSoftwareEngine;
 	}
@@ -146,8 +196,36 @@ const char* SelectEngineDll()
 	return selected;
 }
 
+#if defined(__APPLE__)
+// Restart text replaces only the option groups it actually supplies. Preserve
+// both the canonical line and native argv for every other requested mode.
+bool ReplacesNativeMode(const char* parameter, const std::vector<std::string>& generated) {
+    static const std::vector<std::vector<std::string>> groups{
+        {"-soft", "-software", "-gl", "-d3d"},
+        {"-sw", "-startwindowed", "-windowed", "-window", "-full", "-fullscreen"},
+        {"-w", "-width"},
+        {"-h", "-height"}
+    };
+    for (const auto& group : groups) {
+        if (std::find(group.begin(), group.end(), parameter) == group.end()) {
+            continue;
+        }
+        for (const auto& argument : generated) {
+            if (std::find(group.begin(), group.end(), argument) != group.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return true;
+}
+#endif
+
 void StripLaunchParameters( const char* newCommand )
 {
+#if defined(__APPLE__)
+    const auto generated = cse_restart::GeneratedArguments(newCommand);
+#endif
 	static const char* const parameters[] =
 	{
 		"-sw",
@@ -169,24 +247,145 @@ void StripLaunchParameters( const char* newCommand )
 
 	for ( const char* parameter : parameters )
 	{
+#if defined(__APPLE__)
+        if (!ReplacesNativeMode(parameter, generated)) {
+            continue;
+        }
+#endif
 		cmdline->RemoveParm( parameter );
+#if defined(__APPLE__)
+        RemoveNativeParameter(parameter);
+#endif
 	}
 
 	cmdline->SetParm( "-novid", 0 );
+#if defined(__APPLE__)
+    RemoveNativeParameter("-novid");
+    nativeArguments.emplace_back("-novid");
+    nativeArguments.emplace_back("0");
+#endif
 
 	if ( strstr( newCommand, "-game" ) != NULL )
 	{
 		cmdline->RemoveParm( "-game" );
+#if defined(__APPLE__)
+        RemoveNativeParameter("-game");
+#endif
 	}
 
 	if ( strstr( newCommand, "+load" ) != NULL )
 	{
 		cmdline->RemoveParm( "+load" );
+#if defined(__APPLE__)
+        RemoveNativeParameter("+load");
+#endif
 	}
 
 	cmdline->AppendParm( newCommand, NULL );
+#if defined(__APPLE__)
+    nativeArguments.insert(nativeArguments.end(), generated.begin(), generated.end());
+#endif
 }
 
+#if defined(__APPLE__)
+
+[[noreturn]] void RestartMacClient() {
+    // Transfer the canonical, already-expanded command line as one opaque
+    // argument. Re-tokenizing it would lose quoted paths and response contents.
+    std::vector<char*> arguments{g_szEXEName, const_cast<char*>(cse_restart::ResumeCommandLineSwitch),
+                                 const_cast<char*>(cmdline->GetCmdLine())};
+    for (const auto& argument : nativeArguments) {
+        arguments.push_back(const_cast<char*>(argument.c_str()));
+    }
+    arguments.push_back(nullptr);
+    execv(g_szEXEName, arguments.data());
+    std::fprintf(stderr, "Unable to restart the native client: %s\n", std::strerror(errno));
+    std::fflush(stderr);
+    std::_Exit(EXIT_FAILURE);
+}
+
+bool InitializeMacExecutablePath() {
+    char executablePath[LAUNCHER_PATH_LENGTH];
+    std::uint32_t capacity = static_cast<std::uint32_t>(sizeof(executablePath));
+    if (_NSGetExecutablePath(executablePath, &capacity) != 0) {
+        fputs("Executable path exceeds the launcher path limit.\n", stderr);
+        return false;
+    }
+    char* resolved = realpath(executablePath, nullptr);
+    if (!resolved) {
+        fputs("Failed to resolve the launcher executable path.\n", stderr);
+        return false;
+    }
+    const std::size_t bytes = strlen(resolved);
+    if (bytes >= sizeof(g_szEXEName)) {
+        free(resolved);
+        fputs("Executable path exceeds the launcher path limit.\n", stderr);
+        return false;
+    }
+    memcpy(g_szEXEName, resolved, bytes + 1);
+    memcpy(szBaseDir, resolved, bytes + 1);
+    free(resolved);
+    char* separator = strrchr(szBaseDir, '/');
+    if (!separator) {
+        return false;
+    }
+    if (separator == szBaseDir) {
+        separator[1] = '\0';
+    } else {
+        *separator = '\0';
+    }
+    return true;
+}
+
+bool MacModulePath(const char* moduleName, char (&path)[LAUNCHER_PATH_LENGTH]) {
+    if (!moduleName || !moduleName[0]) {
+        return false;
+    }
+    if (!szBaseDir[0] && !InitializeMacExecutablePath()) {
+        return false;
+    }
+    const int bytes = moduleName[0] == '/' ? snprintf(path, sizeof(path), "%s", moduleName) :
+        snprintf(path, sizeof(path), "%s%s%s", szBaseDir,
+            szBaseDir[strlen(szBaseDir) - 1] == '/' ? "" : "/", moduleName);
+    return bytes >= 0 && static_cast<std::size_t>(bytes) < sizeof(path);
+}
+
+bool ApplyGameDirectory(char* executablePath) {
+    const char* leaf = strrchr(executablePath, '/');
+    leaf = leaf ? leaf + 1 : executablePath;
+    if (CaseCompare(kThisExecutable, leaf) != 0 && cmdline->CheckParm("-game", nullptr) == nullptr) {
+        cmdline->AppendParm("-game", leaf);
+    }
+    const char* game = cmdline->CheckParm("-game", nullptr);
+    std::size_t bytes = 0;
+    if (game) {
+        game += sizeof("-game") - 1;
+        while (*game == ' ' || *game == '\t') {
+            ++game;
+        }
+        if (*game == '"') {
+            ++game;
+            const char* end = strchr(game, '"');
+            if (!end) {
+                return false;
+            }
+            bytes = static_cast<std::size_t>(end - game);
+        } else {
+            bytes = strcspn(game, " \t");
+        }
+    } else {
+        game = kDefaultGame;
+        bytes = sizeof(kDefaultGame) - 1;
+    }
+    if (bytes == 0 || bytes >= sizeof(com_gamedir)) {
+        fputs("Invalid or oversized game directory.\n", stderr);
+        return false;
+    }
+    memcpy(com_gamedir, game, bytes);
+    com_gamedir[bytes] = '\0';
+    return true;
+}
+#else
 void ApplyGameDirectory( char* executablePath )
 {
 	char* leaf = strrchr( executablePath, LAUNCHER_PATH_SEPARATOR ) + 1;
@@ -207,6 +406,7 @@ void ApplyGameDirectory( char* executablePath )
 		strcpy( com_gamedir, kDefaultGame );
 	}
 }
+#endif
 }
 
 char* UTIL_GetBaseDir()
@@ -257,6 +457,12 @@ CSysModule* Sys_LoadModule( const char* moduleName )
 	}
 
 	return (CSysModule*)loaded;
+#elif defined(__APPLE__)
+    char path[LAUNCHER_PATH_LENGTH];
+    if (!MacModulePath(moduleName, path)) {
+        return nullptr;
+    }
+    return reinterpret_cast<CSysModule*>(cse_platform::LoadModule(path));
 #else
 	char absoluteName[MODULE_PATH_LENGTH];
 	char workingDirectory[MODULE_PATH_LENGTH];
@@ -332,6 +538,13 @@ CreateInterfaceFn Sys_GetFactory( const char* moduleName )
 	}
 
 	return (CreateInterfaceFn)GetProcAddress( module, "CreateInterface" );
+#elif defined(__APPLE__)
+    char path[LAUNCHER_PATH_LENGTH];
+    if (!MacModulePath(moduleName, path)) {
+        return nullptr;
+    }
+    return reinterpret_cast<CreateInterfaceFn>(cse_platform::GetSymbol(
+        cse_platform::FindLoadedModule(path), cse_platform::InterfaceFactorySymbol));
 #else
 	void* module = NULL;
 
@@ -349,21 +562,8 @@ CreateInterfaceFn Sys_GetFactory( const char* moduleName )
 }
 
 #if !defined(_WIN32)
-void* GetModuleHandle( const char* name )
-{
-	if ( name == NULL )
-	{
-		return NULL;
-	}
-
-	void* module = LoadModuleHandle( name );
-	if ( module == NULL )
-	{
-		return NULL;
-	}
-
-	UnloadModuleHandle( module );
-	return module;
+void* GetModuleHandle(const char* name) {
+    return cse_platform::FindLoadedModule(name);
 }
 #endif
 
@@ -377,7 +577,12 @@ CSysModule* LoadFilesystemModule( const char*, bool )
 		return NULL;
 	}
 
-	return module;
+    if (!cse::filesystem_abi::CheckedFactory(module)) {
+        fputs("Incompatible owned filesystem module.\n", stderr);
+        Sys_UnloadModule(module);
+        return nullptr;
+    }
+    return module;
 }
 
 int OnVideoModeFailed()
@@ -454,13 +659,18 @@ static void LaunchThroughSteam( const char* commandLine )
 		*separator = '\0';
 	}
 
-	HKEY steamKey;
+    const size_t commandBytes = strlen(commandLine) + 1;
+    if (commandBytes > MAXDWORD) {
+        return;
+    }
+    const DWORD pathBytes = static_cast<DWORD>(strlen(executableDirectory) + 1);
+    HKEY steamKey;
 	if ( RegOpenKeyA( HKEY_CURRENT_USER, kSteamRegistryKey, &steamKey ) == ERROR_SUCCESS )
 	{
 		RegSetValueExA( steamKey, "TempAppPath", 0, REG_SZ,
-			(const BYTE*)executableDirectory, strlen( executableDirectory ) + 1 );
+			(const BYTE*)executableDirectory, pathBytes);
 		RegSetValueExA( steamKey, "TempAppCmdLine", 0, REG_SZ,
-			(const BYTE*)commandLine, strlen( commandLine ) + 1 );
+			(const BYTE*)commandLine, static_cast<DWORD>(commandBytes));
 		DWORD appId = STEAM_TEMPORARY_APP_ID;
 		RegSetValueExA( steamKey, "TempAppID", 0, REG_DWORD, (const BYTE*)&appId, sizeof( appId ) );
 		RegCloseKey( steamKey );
@@ -672,7 +882,12 @@ int WINAPI WinMain( _In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ LPSTR comm
 			break;
 		}
 
-		CreateInterfaceFn fileSystemFactory = Sys_GetFactory( fileSystemModule );
+        CreateInterfaceFn fileSystemFactory = cse::filesystem_abi::CheckedFactory(fileSystemModule);
+        if (!fileSystemFactory) {
+            fputs("Incompatible owned filesystem module.\n", stderr);
+            Sys_UnloadModule(fileSystemModule);
+            return 0;
+        }
 		g_pFileSystem = (IFileSystem*)fileSystemFactory( kFileSystemVersion, NULL );
 		if ( !g_pFileSystem )
 		{
@@ -757,6 +972,7 @@ int WINAPI WinMain( _In_ HINSTANCE instance, _In_opt_ HINSTANCE, _In_ LPSTR comm
 
 #else
 
+#if !defined(__APPLE__)
 static bool UnloadEngineImage( const char* engineDll )
 {
 	void* handle = dlopen( engineDll, RTLD_NOLOAD );
@@ -781,6 +997,7 @@ static bool UnloadEngineImage( const char* engineDll )
 
 	return true;
 }
+#endif
 
 int main( int argc, const char** argv, const char** )
 {
@@ -799,6 +1016,11 @@ int main( int argc, const char** argv, const char** )
 			localeName, activeLocale );
 	}
 
+#if defined(__APPLE__)
+    if (!InitializeMacExecutablePath()) {
+        return EXIT_FAILURE;
+    }
+#else
 	snprintf( g_szEXEName, LAUNCHER_PATH_LENGTH, "%s", argv[0] );
 	snprintf( szBaseDir, LAUNCHER_PATH_LENGTH, "%s", argv[0] );
 
@@ -807,11 +1029,55 @@ int main( int argc, const char** argv, const char** )
 	{
 		*lastSeparator = '\0';
 	}
+#endif
 
-	cmdline->CreateCmdLine( argc, argv );
+    try {
+#if defined(__APPLE__)
+        nativeArguments = cse_restart::ProcessArguments(argc, argv);
+        if (argc > 1 && std::strcmp(argv[1], cse_restart::ResumeCommandLineSwitch) == 0) {
+            if (!RestoreMacLauncherCommandLine(cse_restart::CanonicalLine(argc, argv))) {
+                std::fputs("Unable to restore native restart arguments\n", stderr);
+                return EXIT_FAILURE;
+            }
+        } else
+#endif
+        {
+            cmdline->CreateCmdLine(argc, argv);
+        }
+    } catch (const std::length_error& error) {
+        fprintf(stderr, "%s\n", error.what());
+        return EXIT_FAILURE;
+    }
 	cmdline->CheckParm( "-steam", NULL );
+#if defined(__APPLE__)
+    const char* invocation = argc > 0 && argv[0] ? argv[0] : g_szEXEName;
+    const char* leaf = strrchr(invocation, '/');
+    leaf = leaf ? leaf + 1 : invocation;
+    const std::size_t leafBytes = strlen(leaf);
+    if (leafBytes >= sizeof(executableName)) {
+        fputs("Executable alias exceeds the launcher name limit.\n", stderr);
+        return EXIT_FAILURE;
+    }
+    memcpy(executableName, leaf, leafBytes + 1);
+    if (!ApplyGameDirectory(executableName)) {
+        return EXIT_FAILURE;
+    }
+    if (cmdline->CheckParm("-game", nullptr) &&
+        std::find(nativeArguments.begin(), nativeArguments.end(), "-game") == nativeArguments.end()) {
+        nativeArguments.emplace_back("-game");
+        nativeArguments.emplace_back(com_gamedir);
+    }
+    // Expand caller-relative response files first, then establish the runtime
+    // directory before registry reads and provider calls from module constructors.
+    if (chdir(szBaseDir) != 0) {
+        std::fprintf(stderr, "Unable to enter the native runtime directory '%s': %s\n",
+            szBaseDir, std::strerror(errno));
+        return EXIT_FAILURE;
+    }
+#else
 	strncpy( executableName, g_szEXEName, EXECUTABLE_LEAF_LENGTH );
 	ApplyGameDirectory( executableName );
+#endif
 
 	for ( ;; )
 	{
@@ -823,8 +1089,20 @@ int main( int argc, const char** argv, const char** )
 			return 0;
 		}
 
-		CreateInterfaceFn fileSystemFactory = Sys_GetFactory( fileSystemModule );
+        CreateInterfaceFn fileSystemFactory = cse::filesystem_abi::CheckedFactory(fileSystemModule);
+        if (!fileSystemFactory) {
+            fputs("Incompatible owned filesystem module.\n", stderr);
+            Sys_UnloadModule(fileSystemModule);
+            return 0;
+        }
 		g_pFileSystem = (IFileSystem*)fileSystemFactory( kFileSystemVersion, NULL );
+#if defined(__APPLE__)
+        if (!g_pFileSystem) {
+            fputs("Owned filesystem did not provide VFileSystem009.\n", stderr);
+            Sys_UnloadModule(fileSystemModule);
+            return EXIT_FAILURE;
+        }
+#endif
 		g_pFileSystem->Mount();
 		g_pFileSystem->AddSearchPath( szBaseDir, "ROOT" );
 		szNewCommandParams[0] = '\0';
@@ -832,11 +1110,48 @@ int main( int argc, const char** argv, const char** )
 		const char* engineDll = NULL;
 		SetEngineDLL( &engineDll );
 
+#if defined(CSE_NATIVE_RUNTIME_BOOTSTRAP)
+        const auto selectedImage = std::strcmp(engineDll, kSoftwareEngine) == 0
+            ? cse_mac_runtime::EngineImage::Software : cse_mac_runtime::EngineImage::Hardware;
+        if (!cse_mac_runtime::Session::Available(selectedImage)) {
+            fputs("Requested native renderer is unavailable in this build.\n", stderr);
+            g_pFileSystem->Unmount();
+            Sys_UnloadModule(fileSystemModule);
+            return EXIT_FAILURE;
+        }
+        char enginePath[LAUNCHER_PATH_LENGTH];
+        char fontPath[LAUNCHER_PATH_LENGTH];
+        if (!MacModulePath(engineDll, enginePath) || !MacModulePath("vgui.dylib", fontPath)
+            || !cse_mac_runtime::Session::Admit(enginePath, fontPath, selectedImage)) {
+            fputs("Native engine/VGUI images do not match this launcher's built cohort.\n", stderr);
+            g_pFileSystem->Unmount();
+            Sys_UnloadModule(fileSystemModule);
+            return EXIT_FAILURE;
+        }
+#endif
+#if defined(CSE_NATIVE_RUNTIME_BOOTSTRAP)
+        cse_mac_runtime::Session nativeSession;
+        CSysModule* engineModule = static_cast<CSysModule*>(nativeSession.Load(enginePath, fontPath, selectedImage));
+#else
 		CSysModule* engineModule = Sys_LoadModule( engineDll );
+#endif
 		bool restart = false;
 
 		if ( engineModule != NULL )
 		{
+#if defined(CSE_NATIVE_RUNTIME_BOOTSTRAP)
+            bool adopted = false;
+            if (!nativeSession.Open(engineModule, enginePath, fontPath, adopted)) {
+                if (!adopted) {
+                    Sys_UnloadModule(engineModule);
+                } else if (!nativeSession.Close()) {
+                    return EXIT_FAILURE;
+                }
+                g_pFileSystem->Unmount();
+                Sys_UnloadModule(fileSystemModule);
+                return EXIT_FAILURE;
+            }
+#endif
 			CreateInterfaceFn engineFactory = Sys_GetFactory( engineModule );
 			IEngineAPI* engine = NULL;
 
@@ -847,13 +1162,31 @@ int main( int argc, const char** argv, const char** )
 
 			if ( engine != NULL )
 			{
-				const int runResult = engine->Run( NULL, szBaseDir, cmdline->GetCmdLine(), szNewCommandParams,
-					Sys_GetFactoryThis(), Sys_GetFactory( fileSystemModule ) );
+                const int runResult = [&]() -> int {
+#if defined(CSE_NATIVE_RUNTIME_BOOTSTRAP)
+                    cse::software_lifetime::ImageOwner::Call call(nativeSession.SoftwareOwner());
+                    if (!call) {
+                        return kEngineRunVideoModeFailed;
+                    }
+#endif
+                    return engine->Run(NULL, szBaseDir, cmdline->GetCmdLine(), szNewCommandParams,
+                        Sys_GetFactoryThis(), Sys_GetFactory(fileSystemModule));
+                }();
+#if defined(CSE_NATIVE_RUNTIME_BOOTSTRAP)
+                if (!nativeSession.Close()) {
+                    std::_Exit(EXIT_FAILURE);
+                }
+#else
 				Sys_UnloadModule( engineModule );
+#endif
 
 				if ( runResult == kEngineRunRestart )
 				{
-					restart = UnloadEngineImage( engineDll );
+#if defined(__APPLE__)
+                    restart = true;
+#else
+                    restart = UnloadEngineImage(engineDll);
+#endif
 				}
 				else if ( runResult == kEngineRunVideoModeFailed )
 				{
@@ -862,7 +1195,13 @@ int main( int argc, const char** argv, const char** )
 			}
 			else
 			{
+#if defined(CSE_NATIVE_RUNTIME_BOOTSTRAP)
+                if (!nativeSession.Close()) {
+                    std::_Exit(EXIT_FAILURE);
+                }
+#else
 				Sys_UnloadModule( engineModule );
+#endif
 			}
 		}
 		else
@@ -873,6 +1212,12 @@ int main( int argc, const char** argv, const char** )
 		StripLaunchParameters( szNewCommandParams );
 		g_pFileSystem->Unmount();
 		Sys_UnloadModule( fileSystemModule );
+#if defined(__APPLE__)
+        g_pFileSystem = nullptr;
+        if (restart) {
+            RestartMacClient();
+        }
+#endif
 
 		if ( !restart )
 		{

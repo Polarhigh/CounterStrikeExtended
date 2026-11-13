@@ -3,6 +3,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "A3d3.h"
+#ifndef _WIN32
+#include "a3dclsfc.h"
+#endif
 #include "A3dGeom.h"
 #include "ChunkPage.h"
 #include "A3dList.h"
@@ -18,6 +21,15 @@
 
 HRESULT STDMETHODCALLTYPE CA3d::Enable( DWORD dwFeatures )
 {
+#ifndef _WIN32
+    if (UsesNativeProvider()) {
+        if (!dwFeatures || (m_dwFeaturesAvailable & dwFeatures) != dwFeatures) {
+            return A3DERROR_FEATURE_NOT_SUPPORTED;
+        }
+        m_dwEnabledFeatures |= dwFeatures;
+        return S_OK;
+    }
+#endif
 	if ( !( m_dwFeaturesAvailable & dwFeatures ) )
 		return A3DERROR_FEATURE_NOT_SUPPORTED;
 
@@ -27,6 +39,12 @@ HRESULT STDMETHODCALLTYPE CA3d::Enable( DWORD dwFeatures )
 
 HRESULT STDMETHODCALLTYPE CA3d::Disable( DWORD dwFeatures )
 {
+#ifndef _WIN32
+    if (UsesNativeProvider()) {
+        m_dwEnabledFeatures &= ~dwFeatures;
+        return S_OK;
+    }
+#endif
 	if ( m_dwEnabledFeatures & dwFeatures )
 		m_dwEnabledFeatures -= dwFeatures;
 
@@ -35,6 +53,11 @@ HRESULT STDMETHODCALLTYPE CA3d::Disable( DWORD dwFeatures )
 
 BOOL STDMETHODCALLTYPE CA3d::IsEnabled( DWORD dwFeatures )
 {
+#ifndef _WIN32
+    if (UsesNativeProvider()) {
+        return dwFeatures && (m_dwEnabledFeatures & dwFeatures) == dwFeatures;
+    }
+#endif
 	return ( m_dwEnabledFeatures & dwFeatures ) != 0;
 }
 
@@ -115,8 +138,19 @@ HRESULT STDMETHODCALLTYPE CA3d::End()
 HRESULT STDMETHODCALLTYPE CA3d::Tag( DWORD dwTag )
 {
 	m_Primitive.m_dwTag = dwTag;
+#if UINTPTR_MAX > UINT32_MAX
+    m_PrimitiveIdentity = A3dGeometryIdentity::PublicTag(dwTag);
+#endif
 	return S_OK;
 }
+
+#if UINTPTR_MAX > UINT32_MAX
+void CA3d::TagOwnedPolygon(const a3d_polygon_t* polygon) {
+    m_PrimitiveIdentity = A3dGeometryIdentity::OwnedPolygon(polygon);
+    // Keep the legacy DWORD payload bytes; native matching uses only the sidecar.
+    m_Primitive.m_dwTag = static_cast<DWORD>(m_PrimitiveIdentity.value);
+}
+#endif
 
 void CA3d::AppendGeometryPool( void* pPool )
 {
@@ -604,7 +638,11 @@ void CA3dGeometryFace::Render( CA3d* pA3d )
 		if ( nVertices == A3D_TRIANGLES || nVertices == A3D_QUADS )
 		{
 			pGeometry->Begin( nVertices );
-			pGeometry->Tag( (DWORD)pPolygon );
+#if UINTPTR_MAX > UINT32_MAX
+            pA3d->TagOwnedPolygon(pPolygon);
+#else
+            pGeometry->Tag((DWORD)pPolygon);
+#endif
 			pGeometry->Normal3fv( transformed.m_Normal );
 			for ( int i = 0; i < nVertices; i++ )
 				pGeometry->Vertex3fv( transformed.m_Vertices[i] );
@@ -1097,11 +1135,24 @@ HRESULT CA3dName::Format( const char* pszName, int nId )
 
 HRESULT CA3dName::Set( const char* pszName )
 {
+#ifndef _WIN32
+    if (!pszName) {
+        return E_INVALIDARG;
+    }
+    const size_t length = strnlen(pszName, sizeof(m_szName));
+    if (length == sizeof(m_szName)) {
+        return E_INVALIDARG;
+    }
+    memcpy(m_szName, pszName, length + 1);
+    memset(m_szName + length + 1, 0, sizeof(m_szName) - length - 1);
+    return S_OK;
+#else
 	if ( !pszName )
 		return E_INVALIDARG;
 
 	memcpy( m_szName, pszName, sizeof( m_szName ) );
 	return S_OK;
+#endif
 }
 
 HRESULT CA3dName::Get( char* pszName, DWORD dwSize )
@@ -1825,6 +1876,9 @@ static DWORD g_cMaterialNames = 0;
 
 CA3dList::CA3dList( CA3d* pOwner )
 {
+#ifndef _WIN32
+    pOwner->AddRef();
+#endif
 	m_cReferences = 0;
 	m_pOwner = pOwner;
 	m_pCommands = NULL;
@@ -1832,11 +1886,47 @@ CA3dList::CA3dList( CA3d* pOwner )
 
 CA3dList::~CA3dList()
 {
-	delete m_pCommands;
+#ifndef _WIN32
+    // Call installs borrowed command entries. Retire every entry while the list
+    // still retains its parent, before destroying the backing command storage.
+    auto& pools = m_pOwner->m_GeometryPools;
+    auto* node = pools.m_pFirst;
+    while (node) {
+        auto* next = node->m_pNext;
+        if (node->m_pObject == m_pCommands) {
+            if (node->m_pPrevious) {
+                node->m_pPrevious->m_pNext = next;
+            } else {
+                pools.m_pFirst = next;
+            }
+            if (next) {
+                next->m_pPrevious = node->m_pPrevious;
+            } else {
+                pools.m_pLast = node->m_pPrevious;
+            }
+            if (pools.m_pCurrent == node) {
+                pools.m_pCurrent = next;
+            }
+            --pools.m_nCount;
+            delete node;
+        }
+        node = next;
+    }
+#endif
+    delete m_pCommands;
+#ifndef _WIN32
+    m_pOwner->Release();
+#endif
 }
 
 HRESULT STDMETHODCALLTYPE CA3dList::QueryInterface( REFIID iid, void** ppObject )
 {
+#ifndef _WIN32
+    if (!ppObject) {
+        return E_POINTER;
+    }
+    *ppObject = nullptr;
+#endif
 	if ( !ppObject )
 		return E_INVALIDARG;
 
@@ -1853,15 +1943,27 @@ HRESULT STDMETHODCALLTYPE CA3dList::QueryInterface( REFIID iid, void** ppObject 
 
 ULONG STDMETHODCALLTYPE CA3dList::AddRef()
 {
-	return ++m_cReferences;
+#ifndef _WIN32
+    return __atomic_add_fetch(&m_cReferences, 1, __ATOMIC_SEQ_CST);
+#else
+    return ++m_cReferences;
+#endif
 }
 
 ULONG STDMETHODCALLTYPE CA3dList::Release()
 {
+#ifndef _WIN32
+    const ULONG remaining = __atomic_sub_fetch(&m_cReferences, 1, __ATOMIC_SEQ_CST);
+    if (!remaining) {
+        delete this;
+    }
+    return remaining;
+#else
 	if ( --m_cReferences )
 		delete this;
 
 	return 0;
+#endif
 }
 
 HRESULT STDMETHODCALLTYPE CA3dList::Begin()
@@ -1975,6 +2077,11 @@ HRESULT STDMETHODCALLTYPE CA3dList::Call()
 
 CA3dMaterial::CA3dMaterial()
 {
+#ifndef _WIN32
+    A3dReferenceIncrement(&g_cA3dObjects);
+    m_flReflectanceHF = 1.0f;
+    m_flTransmittanceHF = 0.0f;
+#endif
 	m_cReferences = 0;
 	m_flReflectance = 1.0f;
 	m_flReflectionFilter = 1.0f;
@@ -1986,6 +2093,9 @@ CA3dMaterial::CA3dMaterial()
 
 CA3dMaterial::CA3dMaterial( const CA3dMaterial& source ) : CA3dName()
 {
+#ifndef _WIN32
+    A3dReferenceIncrement(&g_cA3dObjects);
+#endif
 	m_cReferences = 0;
 	memcpy( &m_flReflectance, &source.m_flReflectance, sizeof( A3DVAL ) * 6 );
 	m_dwPreset = source.m_dwPreset;
@@ -1993,11 +2103,28 @@ CA3dMaterial::CA3dMaterial( const CA3dMaterial& source ) : CA3dName()
 
 CA3dMaterial::~CA3dMaterial()
 {
+#ifndef _WIN32
+    A3dReferenceDecrement(&g_cA3dObjects);
+#endif
 }
 
-HRESULT STDMETHODCALLTYPE CA3dMaterial::QueryInterface( REFIID, void** ppObject )
+HRESULT STDMETHODCALLTYPE CA3dMaterial::QueryInterface( REFIID iid, void** ppObject )
 {
-	return ppObject ? S_OK : E_INVALIDARG;
+#ifndef _WIN32
+    if (!ppObject) {
+        return E_POINTER;
+    }
+    *ppObject = nullptr;
+    if (!IsEqualIID(iid, IID_IUnknown) && !IsEqualIID(iid, IID_IA3dMaterial)) {
+        return E_NOINTERFACE;
+    }
+    *ppObject = static_cast<IA3dMaterial*>(this);
+    AddRef();
+    return S_OK;
+#else
+    (void)iid;
+    return ppObject ? S_OK : E_INVALIDARG;
+#endif
 }
 
 ULONG STDMETHODCALLTYPE CA3dMaterial::AddRef()
@@ -2051,7 +2178,11 @@ HRESULT STDMETHODCALLTYPE CA3dMaterial::GetNameID( LPSTR pszName, INT nSize )
 
 HRESULT STDMETHODCALLTYPE CA3dMaterial::SelectPreset( DWORD )
 {
-	return S_OK;
+#ifndef _WIN32
+    return E_NOTIMPL;
+#else
+    return S_OK;
+#endif
 }
 
 HRESULT STDMETHODCALLTYPE CA3dMaterial::GetClosestPreset( LPDWORD pdwPreset )
@@ -3454,6 +3585,10 @@ HRESULT STDMETHODCALLTYPE CA3d::Vertex3f( A3DVAL x, A3DVAL y, A3DVAL z )
 	NextFreeChunk();
 	m_pCurrentCommand->m_dwOpcode = m_dwInputMode;
 	m_pCurrentCommand->m_Payload.m_Primitive = m_Primitive;
+#if UINTPTR_MAX > UINT32_MAX
+    const auto commandIndex = m_pCurrentCommand - m_pCommandBuffer->m_pCommands;
+    m_pCommandBuffer->m_pIdentities[commandIndex] = m_PrimitiveIdentity;
+#endif
 
 	m_nNextVertex = 0;
 	return S_OK;
@@ -3525,8 +3660,18 @@ HRESULT CA3d::InitializeGeometryState()
 	m_GeometryPools.Append( m_pCommandBuffer );
 	m_nNextVertex = 0;
 	memset( &m_Primitive, 0, sizeof( m_Primitive ) );
+#if UINTPTR_MAX > UINT32_MAX
+    m_PrimitiveIdentity = A3dGeometryIdentity::PublicTag(0);
+#endif
 	m_bGeometryInitialized = TRUE;
-	m_dwEnabledFeatures = A3D_DIRECT_PATH_A3D | A3D_DIRECT_PATH_GENERIC;
+#ifndef _WIN32
+    if (UsesNativeProvider()) {
+        m_dwEnabledFeatures = m_dwFeaturesAvailable & A3D_DIRECT_PATH_A3D;
+    } else
+#endif
+    {
+        m_dwEnabledFeatures = A3D_DIRECT_PATH_A3D | A3D_DIRECT_PATH_GENERIC;
+    }
 	m_dwOcclusionMode = A3D_FASTEST;
 	m_dwReflectionMode = A3D_FASTEST;
 	Compat( A3D_COMPAT_LEGACY_STATE_ALTERNATE, 1 );

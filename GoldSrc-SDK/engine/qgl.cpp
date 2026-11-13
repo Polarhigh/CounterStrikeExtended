@@ -1,17 +1,20 @@
+#include "video_platform.h"
 #include "filesystem.h"
 #include "const.h"
 #include <SDL3/SDL_opengl.h>
 #include "glquake.h"
+#include "render/native/legacy_dispatch.h"
 #include <SDL3/SDL_video.h>
 
 #include <cstdio>
 #include <ctime>
+#include <cstdint>
 
 typedef struct glwstate_s
 {
-	HINSTANCE hInstance;
+	CseGLModule hInstance;
 	void* wndproc;
-	HINSTANCE hinstOpenGL;
+	CseGLModule hinstOpenGL;
 	qboolean minidriver;
 	qboolean allowdisplaydepthchange;
 	qboolean mcd_accelerated;
@@ -764,7 +767,9 @@ void( APIENTRY* qglColorTableEXT )( GLenum target, GLenum internalFormat, GLsize
 	const void* table );
 void( APIENTRY* qglSelectTextureSGIS )( GLenum texture );
 void( APIENTRY* qglMTexCoord2fSGIS )( GLenum target, GLfloat s, GLfloat t );
+#if defined(_WIN32)
 BOOL( WINAPI* qwglSwapBuffers )( HDC hdc );
+#endif
 
 #if defined( _WIN32 )
 extern "C"
@@ -2812,6 +2817,7 @@ static void APIENTRY logViewport( GLint x, GLint y, GLsizei width, GLsizei heigh
 
 extern "C" void QGL_Shutdown()
 {
+    cse::render::RemoveLegacyDispatch();
 	glw_state.hinstOpenGL = NULL;
 
 	qglAccum = NULL;
@@ -3166,12 +3172,18 @@ extern "C" void QGL_Shutdown()
 	qglGetShaderInfoLog = NULL;
 	qglGetUniformLocation = NULL;
 	qglUniform1ui = NULL;
+
+#if defined(_WIN32)
 	qwglSwapBuffers = NULL;
+#endif
 }
 
-extern "C" HINSTANCE QGL_Init( const char*, const char* )
+extern "C" CseGLModule QGL_Init( const char*, const char* )
 {
-	glw_state.hinstOpenGL = (HINSTANCE)TRUE;
+    cse::render::RemoveLegacyDispatch();
+    // The retained return value marks a populated GL function table, not an OS module lease.
+    constexpr std::uintptr_t FunctionTableLoadedSentinel = 1;
+    glw_state.hinstOpenGL = reinterpret_cast<CseGLModule>(FunctionTableLoadedSentinel);
 
 	qglAccum = dllAccum = (decltype( dllAccum ))SDL_GL_GetProcAddress( "glAccum" );
 	qglAlphaFunc = dllAlphaFunc = (decltype( dllAlphaFunc ))SDL_GL_GetProcAddress( "glAlphaFunc" );
@@ -3572,8 +3584,16 @@ extern "C" HINSTANCE QGL_Init( const char*, const char* )
 	qglColorTableEXT = NULL;
 	qglSelectTextureSGIS = NULL;
 	qglMTexCoord2fSGIS = NULL;
-	qwglSwapBuffers = NULL;
 
+#if defined(_WIN32)
+	qwglSwapBuffers = NULL;
+#endif
+
+    std::string dispatchError;
+    if (!cse::render::InstallLegacyDispatch(cse::render::DispatchMode::ReferenceGL, nullptr, dispatchError)) {
+        QGL_Shutdown();
+        return nullptr;
+    }
 	return glw_state.hinstOpenGL;
 }
 
@@ -4275,6 +4295,7 @@ extern "C" void GLimp_EnableLogging()
 		qglVertexPointer = dllVertexPointer;
 		qglViewport = dllViewport;
 	}
+    cse::render::RefreshLegacyDispatchReferences();
 }
 
 extern "C" void GLimp_LogNewFrame()

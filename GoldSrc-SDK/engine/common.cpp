@@ -1,4 +1,8 @@
 #include "common.h"
+#if INTPTR_MAX > INT32_MAX
+#include "custom_decal_loader.h"
+#endif
+#include "../common/legacy_float_to_int.h"
 #include "engine_apiproxy.h"
 #include "bspfile.h"
 #include "conprint.h"
@@ -39,7 +43,6 @@
 
 #if ( defined( HL25_HW_ENGINE ) || defined( SW_RENDERER ) ) && defined( _WIN32 )
 #include <cassert>
-#include <xmmintrin.h>
 #endif
 
 int FileSystem_AddFallbackGameDir( const char* gameDirectory );
@@ -118,7 +121,8 @@ typedef struct bf_read_s
 	byte* pInByte;
 } bf_read_t;
 
-static_assert( sizeof( bf_read_t ) == 24 );
+// These pointer-bearing cursors are native storage; stream word/bit widths remain fixed.
+static_assert(sizeof(void*) != 4 || sizeof(bf_read_t) == 24);
 static bf_read_t bfread;
 
 typedef struct
@@ -128,10 +132,10 @@ typedef struct
 	sizebuf_t* pbuf;
 } bf_write_t;
 
-static_assert( sizeof( bf_write_t ) == 12 );
+static_assert(sizeof(void*) != 4 || sizeof(bf_write_t) == 12);
 static_assert( offsetof( bf_write_t, nCurOutputBit ) == 0 );
-static_assert( offsetof( bf_write_t, pOutByte ) == 4 );
-static_assert( offsetof( bf_write_t, pbuf ) == 8 );
+static_assert(sizeof(void*) != 4 || offsetof(bf_write_t, pOutByte) == 4);
+static_assert(sizeof(void*) != 4 || offsetof(bf_write_t, pbuf) == 8);
 static bf_write_t bfwrite;
 
 static constexpr unsigned int BITS_PER_WORD = sizeof( std::uint32_t ) * CHAR_BIT;
@@ -805,6 +809,8 @@ const char* COM_Parse( const char* data )
 	com_token[length] = '\0';
 	return data;
 }
+
+#include "worldspawn_value_impl.h"
 
 const char* COM_ParseLine( const char* data )
 {
@@ -1767,25 +1773,21 @@ void MSG_WriteBitVec3Coord( const vec_t* coordinates )
 		MSG_WriteBitCoord( coordinates[2] );
 }
 
-void MSG_WriteBitAngle( float angle, int numBits )
-{
-	constexpr int MAX_BIT_ANGLE_BITS = sizeof( std::uint32_t ) * CHAR_BIT;
-	constexpr int DEGREES_PER_TURN = 360;
-	if ( numBits >= MAX_BIT_ANGLE_BITS )
-		Sys_Error( "Can't write bit angle with 32 bits precision\n" );
-	std::uint32_t steps = 1u << numBits;
-	double wrapped = std::fmod( static_cast<double>( angle ), static_cast<double>( DEGREES_PER_TURN ) );
-	double unsignedSteps = static_cast<double>( steps );
-	float wrappedAngle = static_cast<float>( wrapped );
-	float stepsPerTurn = static_cast<float>( unsignedSteps );
-	float scaledAngle = wrappedAngle * stepsPerTurn;
-#if ( defined( HL25_HW_ENGINE ) || defined( SW_RENDERER ) ) && defined( _WIN32 )
-	int packedAngle = _mm_cvtt_ss2si( _mm_set_ss( scaledAngle ) );
-#else
-	int packedAngle = static_cast<int>( scaledAngle );
-#endif
-	std::uint32_t value = static_cast<std::uint32_t>( packedAngle / DEGREES_PER_TURN ) & ( steps - 1 );
-	MSG_WriteBits( value, numBits );
+void MSG_WriteBitAngle(float angle, int numBits) {
+    constexpr int MaximumBitAngleBits = sizeof(std::uint32_t) * CHAR_BIT;
+    constexpr int DegreesPerTurn = 360;
+    if (numBits >= MaximumBitAngleBits) {
+        Sys_Error("Can't write bit angle with 32 bits precision\n");
+    }
+    const std::uint32_t steps = 1u << numBits;
+    const double wrapped = std::fmod(static_cast<double>(angle), static_cast<double>(DegreesPerTurn));
+    const double unsignedSteps = static_cast<double>(steps);
+    const float wrappedAngle = static_cast<float>(wrapped);
+    const float stepsPerTurn = static_cast<float>(unsignedSteps);
+    const float scaledAngle = wrappedAngle * stepsPerTurn;
+    const int packedAngle = CseLegacyTruncateFloatToInt(scaledAngle);
+    const std::uint32_t value = static_cast<std::uint32_t>(packedAngle / DegreesPerTurn) & (steps - 1);
+    MSG_WriteBits(value, numBits);
 }
 
 short ShortSwap( short value )
@@ -1850,7 +1852,12 @@ enum
 	LOADFILE_HEAP = 5
 };
 
+#if INTPTR_MAX > INT32_MAX
+namespace {
+byte* COM_LoadFileNative(char* path, int usehunk, int* pLength, int* initializedBytes, bool requireHeap)
+#else
 byte* COM_LoadFile( char* path, int usehunk, int* pLength )
+#endif
 {
 	constexpr int FILE_LOAD_BASE_BYTES = 260;
 	constexpr int FILE_LOAD_TAG_LENGTH = 32;
@@ -1859,11 +1866,26 @@ byte* COM_LoadFile( char* path, int usehunk, int* pLength )
 	if ( pLength )
 		*pLength = 0;
 
+#if INTPTR_MAX > INT32_MAX
+    if (requireHeap && usehunk != LOADFILE_HEAP) {
+        return nullptr;
+    }
+#endif
 	FileHandle_t file = FS_Open( path, "rb" );
 	if ( !file )
 		return nullptr;
 
+#if INTPTR_MAX > INT32_MAX
+    const unsigned int fileBytes = FS_Size(file);
+    constexpr unsigned int MaximumHeapFileBytes = static_cast<unsigned int>(INT_MAX - 1);
+    if (usehunk == LOADFILE_HEAP && fileBytes > MaximumHeapFileBytes) {
+        FS_Close(file);
+        return nullptr;
+    }
+    int length = static_cast<int>(fileBytes);
+#else
 	int length = static_cast<int>( FS_Size( file ) );
+#endif
 	char base[FILE_LOAD_BASE_BYTES];
 	if ( !COM_FileBase_s( path, base, FILE_LOAD_BASE_BYTES ) )
 		Sys_Error( "COM_LoadFile: bad path name for %s", path );
@@ -1901,12 +1923,44 @@ byte* COM_LoadFile( char* path, int usehunk, int* pLength )
 		Sys_Error( "COM_LoadFile: not enough space for %s", path );
 
 	buffer[length] = '\0';
+#if INTPTR_MAX > INT32_MAX
+    if (usehunk == LOADFILE_HEAP) {
+        if (FS_Read(buffer, length, 1, file) != length) {
+            FS_Close(file);
+            Mem_Free(buffer);
+            return nullptr;
+        }
+    } else {
+        FS_Read(buffer, length, 1, file);
+    }
+#else
 	FS_Read( buffer, length, 1, file );
+#endif
 	FS_Close( file );
 	if ( pLength )
 		*pLength = length;
+#if INTPTR_MAX > INT32_MAX
+    if (initializedBytes) {
+        *initializedBytes = length;
+    }
+#endif
 	return buffer;
 }
+#if INTPTR_MAX > INT32_MAX
+} // namespace
+
+byte* COM_LoadFile(char* path, int usehunk, int* pLength) {
+    return COM_LoadFileNative(path, usehunk, pLength, nullptr, false);
+}
+
+unsigned char* cse::LoadCustomizationFile(char* path, int* initializedBytes) {
+    if (!initializedBytes) {
+        return nullptr;
+    }
+    *initializedBytes = 0;
+    return COM_LoadFileNative(path, LOADFILE_HEAP, nullptr, initializedBytes, true);
+}
+#endif
 
 byte* COM_LoadHunkFile( char* filename )
 {
@@ -1957,8 +2011,11 @@ void COM_CreatePath( char* path )
 
 int COM_ExpandFilename( char* filename )
 {
-	char localPath[GAME_DIRECTORY_BYTES];
-	FS_GetLocalPath( filename, localPath, sizeof( localPath ) );
+    char localPath[GAME_DIRECTORY_BYTES]{};
+    if (!FS_GetLocalPath(filename, localPath, sizeof(localPath))) {
+        filename[0] = '\0';
+        return 0;
+    }
 
 	const char* source = localPath;
 	char* destination = filename;
@@ -2171,24 +2228,24 @@ char* COM_BinPrintf( byte* buffer, int length )
 
 constexpr int WAVE_CHUNK_ID_BYTES = 4;
 
-typedef struct
-{
-	char chunkID[WAVE_CHUNK_ID_BYTES];
-	long chunkSize;
-	short wFormatTag;
-	unsigned short wChannels;
-	unsigned long dwSamplesPerSec;
-	unsigned long dwAvgBytesPerSec;
-	unsigned short wBlockAlign;
-	unsigned short wBitsPerSample;
-} FormatChunk;
+// RIFF stores Win32-width little-endian words on every supported target.
+struct FormatChunk {
+    char chunkID[WAVE_CHUNK_ID_BYTES];
+    std::int32_t chunkSize;
+    std::int16_t wFormatTag;
+    std::uint16_t wChannels;
+    std::uint32_t dwSamplesPerSec;
+    std::uint32_t dwAvgBytesPerSec;
+    std::uint16_t wBlockAlign;
+    std::uint16_t wBitsPerSample;
+};
 
 static_assert( sizeof( FormatChunk ) == 24 );
 
 unsigned int COM_GetApproxWavePlayLength( const char* filepath )
 {
 	constexpr int WAVE_HEADER_READ_BYTES = 128;
-	constexpr int RIFF_FORMAT_ID_OFFSET = WAVE_CHUNK_ID_BYTES + sizeof( long );
+	constexpr int RIFF_FORMAT_ID_OFFSET = WAVE_CHUNK_ID_BYTES + sizeof(std::uint32_t);
 	constexpr int RIFF_FORMAT_CHUNK_OFFSET = RIFF_FORMAT_ID_OFFSET + WAVE_CHUNK_ID_BYTES;
 	constexpr unsigned int MILLISECONDS_PER_SECOND = 1000;
 

@@ -1047,8 +1047,8 @@ TutorMessageEvent* CCSTutor::CreateTutorMessageEvent( TutorMessageID id, CBaseEn
 	case YOU_KILLED_PLAYER_HEADSHOT:
 	case ENEMY_KILLED:
 		GetNumPlayersAliveOnTeams( numT, numCT );
-		snprintf( numTStr, sizeof( numTStr ), "%i", numT );
-		snprintf( numLeftStr, 16, "%i", numCT );
+        snprintf( numTStr, sizeof( numTStr ), "%i", numT );
+        snprintf( numLeftStr, 16, "%i", numCT );
 		if ( player->m_iTeam == CT )
 			event->AddParameter( numTStr );
 		else if ( player->m_iTeam == TERRORIST )
@@ -1077,8 +1077,8 @@ TutorMessageEvent* CCSTutor::CreateTutorMessageEvent( TutorMessageID id, CBaseEn
 			else if ( player->m_iTeam == CT )
 				numCT--;
 		}
-		snprintf( numTStr, sizeof( numTStr ), "%i", numT );
-		snprintf( numLeftStr, 16, "%i", numCT );
+        snprintf( numTStr, sizeof( numTStr ), "%i", numT );
+        snprintf( numLeftStr, 16, "%i", numCT );
 		if ( player->m_iTeam == CT )
 			event->AddParameter( numLeftStr );
 		else if ( player->m_iTeam == TERRORIST )
@@ -1130,14 +1130,16 @@ void CCSTutor::ConstructRecentDeathsList( TeamName team, char* buffer, int bufle
 			strcat( buffer, "  " );
 			strcat( buffer, "%n" );
 			char scratch[32];
-			_itoa( i, scratch, 10 );
+            snprintf(scratch, sizeof(scratch), "%d", i);
 			strcat( buffer, scratch );
 			strcat( buffer, "\n" );
 			m_playerDeathInfo[i - 1].m_event = event;
 		}
 	}
-	for ( int i = strlen( buffer ) - 1; i >= 0 && buffer[i] == '\n'; i-- )
-		buffer[i] = '\0';
+    auto length = strlen(buffer);
+    while (length > 0 && buffer[length - 1] == '\n') {
+        buffer[--length] = '\0';
+    }
 }
 
 void CCSTutor::CheckHintMessages( float time )

@@ -1,3 +1,4 @@
+#include "native_platform.h"
 #include "A3dScene.h"
 #include "A3d3.h"
 #include "ChunkPage.h"
@@ -7,6 +8,7 @@
 #include "A3dList.h"
 #include "A3dOpeningBuilder.h"
 #include "resman.h"
+#include "native_device_init.h"
 #include "A3dSource.h"
 
 #include <math.h>
@@ -1712,6 +1714,15 @@ HRESULT CA3d::ShutdownBackend()
 
 HRESULT STDMETHODCALLTYPE CA3d::IsFeatureAvailable( DWORD dwFeatures )
 {
+#ifndef _WIN32
+    if (UsesNativeProvider()) {
+        if (dwFeatures && (m_dwFeaturesAvailable & dwFeatures) == dwFeatures) {
+            return S_OK;
+        }
+        return (m_dwRequestedFeatures & dwFeatures) ? A3DERROR_FEATURE_NOT_SUPPORTED :
+            A3DERROR_FEATURE_NOT_REQUESTED;
+    }
+#endif
 	if ( m_dwFeaturesAvailable & dwFeatures )
 		return S_OK;
 	if ( m_dwRequestedFeatures & dwFeatures )
@@ -1719,11 +1730,85 @@ HRESULT STDMETHODCALLTYPE CA3d::IsFeatureAvailable( DWORD dwFeatures )
 	return A3DERROR_FEATURE_NOT_REQUESTED;
 }
 
+#if UINTPTR_MAX > UINT32_MAX
+static HRESULT InitializeNativeA3dDevice(IDirectSound* directSound, const GUID* device, DWORD features,
+    DWORD initializationMode, REFIID legacyBackendId, IA3dDal** backend, DWORD* supportedFeatures) {
+    if (!directSound || !backend || !supportedFeatures) {
+        return E_POINTER;
+    }
+    *backend = nullptr;
+    *supportedFeatures = 0;
+
+    GUID deviceValue = {};
+    const GUID* requestedDevice = nullptr;
+    if (device) {
+        deviceValue = *device;
+        requestedDevice = &deviceValue;
+    }
+
+    IA3dNativeDeviceV1* nativeDevice = nullptr;
+    HRESULT result = directSound->QueryInterface(IID_IA3dNativeDeviceV1,
+        reinterpret_cast<void**>(&nativeDevice));
+    if (FAILED(result)) {
+        if (nativeDevice) {
+            nativeDevice->Release();
+        }
+        return directSound->Initialize(requestedDevice);
+    }
+    if (!nativeDevice) {
+        return E_NOINTERFACE;
+    }
+
+    IA3dDal* retainedBackend = nullptr;
+    result = directSound->QueryInterface(legacyBackendId, reinterpret_cast<void**>(&retainedBackend));
+    if (SUCCEEDED(result) && retainedBackend) {
+        DWORD supported = 0;
+        result = nativeDevice->InitializeDevice(requestedDevice, features, initializationMode, &supported);
+        if (SUCCEEDED(result)) {
+            *backend = retainedBackend;
+            *supportedFeatures = supported;
+            retainedBackend = nullptr;
+        }
+    } else if (SUCCEEDED(result)) {
+        result = E_NOINTERFACE;
+    }
+    if (retainedBackend) {
+        retainedBackend->Release();
+    }
+    nativeDevice->Release();
+    return result;
+}
+#endif
+
 HRESULT STDMETHODCALLTYPE CA3d::Init( LPGUID pDevice, DWORD dwFeatures, DWORD )
 {
 	DWORD dwSupportedFeatures = 0;
-	m_dwRequestedFeatures = dwFeatures;
+#ifndef _WIN32
+    if (!UsesNativeProvider()) {
+        m_dwRequestedFeatures = dwFeatures;
+    }
+#else
+    m_dwRequestedFeatures = dwFeatures;
+#endif
 
+#if UINTPTR_MAX > UINT32_MAX
+    IA3dDal* initializedBackend = nullptr;
+    HRESULT hr = InitializeNativeA3dDevice(m_pDirectSound, pDevice, dwFeatures,
+        A3D_BACKEND_INITIALIZATION_MODE, s_BackendInterfaceId, &initializedBackend, &dwSupportedFeatures);
+    if (FAILED(hr)) {
+#ifndef _WIN32
+        if (UsesNativeProvider() && hr == A3DERROR_FEATURE_NOT_SUPPORTED) {
+            return hr;
+        }
+#endif
+        return A3DERROR_FAILED_INIT;
+    }
+    if (m_pBackend) {
+        m_pBackend->Release();
+    }
+    m_pBackend = initializedBackend;
+    if (m_pBackend) {
+#else
 	HRESULT hr = m_pDirectSound->QueryInterface( s_BackendInterfaceId, (void**)&m_pBackend );
 	if ( FAILED( hr ) )
 	{
@@ -1736,6 +1821,7 @@ HRESULT STDMETHODCALLTYPE CA3d::Init( LPGUID pDevice, DWORD dwFeatures, DWORD )
 			(void*)A3D_BACKEND_INITIALIZATION_MODE, &dwSupportedFeatures );
 		if ( FAILED( hr ) )
 			return A3DERROR_FAILED_INIT;
+#endif
 
 		a3d_backend_caps_t caps;
 		hr = m_pBackend->GetA3dCaps( &caps, &pDevice );
@@ -1748,7 +1834,17 @@ HRESULT STDMETHODCALLTYPE CA3d::Init( LPGUID pDevice, DWORD dwFeatures, DWORD )
 			dwSupportedFeatures &= ~A3D_1ST_REFLECTIONS;
 	}
 
-	m_dwFeaturesAvailable = dwSupportedFeatures | A3D_OCCLUSIONS | A3D_DIRECT_PATH_A3D;
+#ifndef _WIN32
+    if (UsesNativeProvider()) {
+        m_dwRequestedFeatures = dwFeatures;
+        m_dwFeaturesAvailable = dwSupportedFeatures;
+        // Retain the direct-path default; available occlusion requires Enable.
+        m_dwEnabledFeatures = dwSupportedFeatures & A3D_DIRECT_PATH_A3D;
+    } else
+#endif
+    {
+        m_dwFeaturesAvailable = dwSupportedFeatures | A3D_OCCLUSIONS | A3D_DIRECT_PATH_A3D;
+    }
 	SetResourceManagerMode( A3D_RESOURCE_MODE_DYNAMIC );
 	return S_OK;
 }
@@ -1804,7 +1900,7 @@ HRESULT STDMETHODCALLTYPE CA3d::Clear()
 
 HRESULT STDMETHODCALLTYPE CA3d::Flush()
 {
-	double flMilliseconds = (double)timeGetTime();
+	double flMilliseconds = (double)A3dMonotonicMilliseconds();
 	double flFrameTime = ( flMilliseconds - s_lastFlush.flMilliseconds ) * A3D_SECONDS_PER_MILLISECOND;
 	m_flFrameTime = (A3DVAL)flFrameTime;
 	if ( !( flFrameTime >= 0.0 ) || flFrameTime > A3D_MAX_FRAME_TIME )

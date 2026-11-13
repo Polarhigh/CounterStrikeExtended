@@ -1,3 +1,6 @@
+#if defined(__APPLE__) && defined(SW_RENDERER)
+#include "native_software_lifetime.h"
+#endif
 #include "utlbuffer.h"
 #include "utllinkedlist.h"
 #include "interface.h"
@@ -12,6 +15,7 @@
 #include "net.h"
 #include "filter.h"
 #include "eiface.h"
+#include "admin_provider_status.h"
 
 #if defined( _WIN32 )
 #include <cassert>
@@ -19,6 +23,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 
 #include "buildslave_assert.h"
 #define ASSERT_FILE BUILDSLAVE_PATH( L"engine\\sv_remoteaccess.cpp" )
@@ -30,12 +35,7 @@
 #define SERVERDATA_RESPONSE_VALUE 0
 #define SERVERDATA_UPDATE 1
 
-class IGameServerData : public IBaseInterface
-{
-public:
-	virtual void WriteDataRequest( const void* buffer, int bufferSize ) = 0;
-	virtual int ReadDataResponse( void* buffer, int bufferSize ) = 0;
-};
+#include "../public/game_server_data.h"
 
 class CServerRemoteAccess : public IGameServerData
 {
@@ -55,6 +55,9 @@ public:
 	void WriteDataRequest( const void* buffer, int bufferSize );
 	int ReadDataResponse( void* buffer, int bufferSize );
 	void SendMessageToAdminUI( const char* message );
+#if defined(__APPLE__) && defined(SW_RENDERER)
+    bool RetireResponses() noexcept;
+#endif
 
 private:
 	void SetValue( const char* variable, const char* value );
@@ -67,8 +70,8 @@ private:
 	void RequestValue( int requestID, const char* variable );
 
 	CUtlLinkedList<DataResponse_t, int> m_ResponsePackets;
-	int m_iBytesSent;
-	int m_iBytesReceived;
+	std::uint64_t m_iBytesSent;
+	std::uint64_t m_iBytesReceived;
 };
 
 extern cvar_t mapcyclefile;
@@ -84,65 +87,86 @@ CServerRemoteAccess::~CServerRemoteAccess()
 
 void CServerRemoteAccess::WriteDataRequest( const void* buffer, int bufferSize )
 {
-	m_iBytesReceived += bufferSize;
-
-	CUtlBuffer cmd( buffer, bufferSize, false );
-	int requestID = cmd.GetInt();
-	int requestType = cmd.GetInt();
-
-	switch ( requestType )
-	{
-	case SERVERDATA_SETVALUE:
-	{
-		char variable[256];
-		char value[512];
-		cmd.GetString( variable );
-		cmd.GetString( value );
-		SetValue( variable, value );
-		break;
-	}
-	case SERVERDATA_EXECCOMMAND:
-	{
-		char command[512];
-		cmd.GetString( command );
-		ExecCommand( command );
-		break;
-	}
-	case SERVERDATA_REQUESTVALUE:
-	{
-		char variable[512];
-		cmd.GetString( variable );
-		RequestValue( requestID, variable );
-		break;
-	}
-#if defined( _WIN32 )
-	default:
-		ASSERT_AT( !("Unknown requestType in CServerRemoteAccess::WriteDataRequest()"), 189 );
-		break;
+#if defined(__APPLE__) && defined(SW_RENDERER)
+    cse::software_lifetime::Entry entry;
+    if (!entry) {
+        return;
+    }
 #endif
-	}
+    constexpr int HeaderBytes = 2 * sizeof(std::int32_t);
+    constexpr int MaximumVariableBytes = 256;
+    constexpr int MaximumValueBytes = 512;
+    constexpr int MaximumCommandBytes = 512;
+    constexpr int MaximumRequestBytes = HeaderBytes + MaximumVariableBytes + MaximumValueBytes;
+    if (!buffer || bufferSize < HeaderBytes + 2 || bufferSize > MaximumRequestBytes) {
+        return;
+    }
+    const auto* bytes = static_cast<const char*>(buffer);
+    std::int32_t requestID;
+    std::int32_t requestType;
+    std::memcpy(&requestID, bytes, sizeof(requestID));
+    std::memcpy(&requestType, bytes + sizeof(requestID), sizeof(requestType));
+    if (requestID < 0 || requestType < SERVERDATA_REQUESTVALUE || requestType > SERVERDATA_EXECCOMMAND) {
+        return;
+    }
+    const char* variable = bytes + HeaderBytes;
+    const auto* separator = static_cast<const char*>(std::memchr(variable, 0, bufferSize - HeaderBytes));
+    if (!separator) {
+        return;
+    }
+    const int variableBytes = static_cast<int>(separator - variable) + 1;
+    const int variableLimit = requestType == SERVERDATA_SETVALUE ? MaximumVariableBytes : MaximumCommandBytes;
+    if (variableBytes > variableLimit) {
+        return;
+    }
+    const char* value = separator + 1;
+    const int valueBytes = bufferSize - static_cast<int>(value - bytes);
+    if (valueBytes <= 0 || valueBytes > MaximumValueBytes || bytes[bufferSize - 1] != 0 ||
+        std::memchr(value, 0, valueBytes) != bytes + bufferSize - 1 ||
+        (requestType != SERVERDATA_SETVALUE && valueBytes != 1)) {
+        return;
+    }
+    m_iBytesReceived += static_cast<std::uint64_t>(bufferSize);
+    switch (requestType) {
+    case SERVERDATA_SETVALUE:
+        SetValue(variable, value);
+        break;
+    case SERVERDATA_EXECCOMMAND:
+        ExecCommand(variable);
+        break;
+    case SERVERDATA_REQUESTVALUE:
+        RequestValue(requestID, variable);
+        break;
+    }
+
 }
 
 int CServerRemoteAccess::ReadDataResponse( void* buffer, int bufferSize )
 {
-	int i = m_ResponsePackets.Head();
-	if ( !m_ResponsePackets.IsValidIndex( i ) )
-		return 0;
-
-	CUtlBuffer& response = m_ResponsePackets[i].packet;
-
-	int bytesToCopy = response.TellPut();
-#if defined( _WIN32 )
-	ASSERT_AT( bufferSize >= bytesToCopy, 205 );
+#if defined(__APPLE__) && defined(SW_RENDERER)
+    cse::software_lifetime::Entry entry;
+    if (!entry) {
+        return 0;
+    }
 #endif
-	if ( bufferSize < bytesToCopy )
-		bytesToCopy = 0;
-	else if ( bytesToCopy > 0 )
-		memcpy( buffer, response.Base(), bytesToCopy );
-
-	m_iBytesSent += bytesToCopy;
-	m_ResponsePackets.Remove( i );
-	return bytesToCopy;
+    if (!buffer || bufferSize <= 0) {
+        return 0;
+    }
+    while (m_ResponsePackets.IsValidIndex(m_ResponsePackets.Head())) {
+        const int index = m_ResponsePackets.Head();
+        CUtlBuffer& response = m_ResponsePackets[index].packet;
+        const int packetBytes = response.TellPut();
+        if (packetBytes <= 0 || packetBytes > bufferSize) {
+            // Never return a partial record, or report an empty queue while later records remain.
+            m_ResponsePackets.Remove(index);
+            continue;
+        }
+        std::memcpy(buffer, response.Base(), packetBytes);
+        m_iBytesSent += static_cast<std::uint64_t>(packetBytes);
+        m_ResponsePackets.Remove(index);
+        return packetBytes;
+    }
+    return 0;
 }
 
 void CServerRemoteAccess::SetValue( const char* variable, const char* value )
@@ -190,6 +214,27 @@ const char* CServerRemoteAccess::LookupStringValue( const char* variable )
 {
 	static char s_ReturnBuf[32];
 
+    if (!std::strncmp(variable, "provider_", std::strlen("provider_"))) {
+        const auto status = Steam_QueryAdminStatus();
+        int value = 0;
+        if (!std::strcmp(variable, "provider_available")) {
+            value = status.available;
+        } else if (!std::strcmp(variable, "provider_connected")) {
+            value = status.connected;
+        } else if (!std::strcmp(variable, "provider_secure_requested")) {
+            value = status.secureRequested;
+        } else if (!std::strcmp(variable, "provider_secure")) {
+            value = status.secure;
+        } else if (!std::strcmp(variable, "provider_restart")) {
+            value = status.restartRequested;
+        } else if (!std::strcmp(variable, "provider_failure")) {
+            value = status.failure;
+        } else {
+            return nullptr;
+        }
+        std::snprintf(s_ReturnBuf, sizeof(s_ReturnBuf), "%d", value);
+        return s_ReturnBuf;
+    }
 	cvar_t* var = Cvar_FindVar( variable );
 	if ( var )
 		return var->string;
@@ -361,12 +406,14 @@ bool CServerRemoteAccess::LookupValue( const char* variable, CUtlBuffer& value )
 	{
 		int len = 0;
 		byte* data = COM_LoadFileForMe( mapcyclefile.string, &len );
-		if ( data && len )
-		{
-			value.PutString( (const char*)data );
-			value.PutChar( 0 );
-			COM_FreeFile( data );
-		}
+        if (data) {
+            if (len > 0) {
+                value.PutString(reinterpret_cast<const char*>(data));
+            }
+            COM_FreeFile(data);
+        }
+        // Empty and missing files still complete the value request with a terminated empty string.
+        value.PutChar(0);
 		return true;
 	}
 
@@ -395,6 +442,12 @@ void CServerRemoteAccess::RequestValue( int requestID, const char* variable )
 
 void CServerRemoteAccess::SendMessageToAdminUI( const char* message )
 {
+#if defined(__APPLE__) && defined(SW_RENDERER)
+    cse::software_lifetime::Entry entry;
+    if (!entry) {
+        return;
+    }
+#endif
 	int i = m_ResponsePackets.AddToTail();
 	CUtlBuffer& response = m_ResponsePackets[i].packet;
 
@@ -402,6 +455,16 @@ void CServerRemoteAccess::SendMessageToAdminUI( const char* message )
 	response.PutInt( SERVERDATA_UPDATE );
 	response.PutString( message );
 }
+
+#if defined(__APPLE__) && defined(SW_RENDERER)
+bool CServerRemoteAccess::RetireResponses() noexcept {
+    if (!cse::software_lifetime::RetirementInProgress()) {
+        return false;
+    }
+    m_ResponsePackets.RemoveAll();
+    return true;
+}
+#endif
 
 CServerRemoteAccess g_ServerRemoteAccess;
 
@@ -411,3 +474,16 @@ void NotifyDedicatedServerUI( const char* message )
 {
 	g_ServerRemoteAccess.SendMessageToAdminUI( message );
 }
+
+#if defined(__APPLE__) && defined(SW_RENDERER)
+#include "../public/native_dedicated_abi.h"
+extern "C" __attribute__((visibility("default"))) const cse::abi::Descriptor* CseGetGameServerDataAbiV1() {
+    return &cse::dedicated_abi::Admin;
+}
+#endif
+
+#if defined(__APPLE__) && defined(SW_RENDERER)
+bool cse::software_lifetime::RetireRemoteAccess() noexcept {
+    return g_ServerRemoteAccess.RetireResponses();
+}
+#endif

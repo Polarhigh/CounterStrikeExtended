@@ -56,7 +56,9 @@ typedef int BOOL;
 #include <string.h> // memset 
 #ifndef max
 #define max(a,b)  (((a) > (b)) ? (a) : (b))
+#ifndef _vsnprintf
 #define _vsnprintf(a,b,c,d) vsnprintf(a,b,c,d)
+#endif
 #endif
 #endif //_WIN32
 
@@ -64,14 +66,14 @@ typedef int BOOL;
 #include "stdio.h"
 #include "stdlib.h"
 #include "minmax.h"
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(_vsnprintf)
 # define _vsnprintf(a,b,c,d) vsnprintf(a,b,c,d)
 #endif
 #include "math.h"
 
 // Header file containing definition of globalvars_t and entvars_t
 typedef unsigned int func_t;					//
-typedef unsigned int string_t;				// from engine's pr_comp.h;
+#include "cse_string.h"
 typedef float vec_t;				// needed before including progdefs.h
 
 // Vector class

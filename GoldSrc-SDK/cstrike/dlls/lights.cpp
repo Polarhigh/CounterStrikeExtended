@@ -41,7 +41,7 @@ public:
 
 private:
 	int		m_iStyle;
-	int		m_iszPattern;
+	string_t		m_iszPattern;
 	int		m_iStartedOff;
 #if defined( _MSC_VER )
 #pragma warning( suppress : 26495 )
@@ -126,7 +126,8 @@ void CLight::Restart( void )
 	else
 	{
 		pev->spawnflags &= ~SF_LIGHT_START_OFF;
-		LIGHT_STYLE( m_iStyle, m_iszPattern ? STRING( m_iszPattern ) : "m" );
+        // The legacy callback retains this address and only reads its characters.
+        LIGHT_STYLE(m_iStyle, const_cast<char *>(m_iszPattern ? STRING(m_iszPattern) : "m"));
 	}
 }
 

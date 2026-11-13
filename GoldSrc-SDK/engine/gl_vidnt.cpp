@@ -1,6 +1,11 @@
 #include "../common/sdl3_policy.h"
 // gl_vidnt.c -- NT GL vid component
-#include <windows.h>
+#include "video_platform.h"
+#if !defined(_WIN32)
+#include "../common/legacy_bmp_records.h"
+using BITMAPFILEHEADER = cse_bmp::FileHeader;
+using BITMAPINFOHEADER = cse_bmp::InfoHeader;
+#endif
 
 #include "cvar.h"
 #include "cmd.h"
@@ -11,6 +16,7 @@
 #include <SDL3/SDL_opengl.h>
 #include <SDL3/SDL_properties.h>
 #include "glquake.h"
+#include "render/native/legacy_dispatch.h"
 #include "filesystem.h"
 #include "ivideomode.h"
 #include "mem.h"
@@ -61,7 +67,7 @@ extern cvar_t gl_clear;
 
 void GL_SelectTexture( GLenum texture );
 void DT_Initialize();
-extern "C" HINSTANCE QGL_Init( const char* driver, const char* commandLine );
+extern "C" CseGLModule QGL_Init( const char* driver, const char* commandLine );
 extern "C" void GLimp_LogNewFrame();
 extern "C" void GLimp_EnableLogging();
 void Sys_Sleep( int msec );
@@ -92,7 +98,7 @@ static float s_fYMouseAspectAdjustment = 1.0f;
 int bDoScaledFBO = 1;
 FBO_Container_t s_MSAAFBO;
 FBO_Container_t s_BackBufferFBO;
-BOOL gfMiniDriver;
+qboolean gfMiniDriver;
 
 #if defined( _WIN32 )
 static PIXELFORMATDESCRIPTOR pfd =
@@ -120,11 +126,11 @@ static int s_bPixelFormatSet;
 
 extern "C"
 {
-extern BOOL( WINAPI* qwglMakeCurrent )( HDC hdc, HGLRC context );
-extern HGLRC( WINAPI* qwglCreateContext )( HDC hdc );
-extern BOOL( WINAPI* qwglSetPixelFormat )( HDC hdc, int format, const PIXELFORMATDESCRIPTOR* descriptor );
-extern int( WINAPI* qwglDescribePixelFormat )( HDC hdc, int format, UINT size, PIXELFORMATDESCRIPTOR* descriptor );
-extern int( WINAPI* qwglChoosePixelFormat )( HDC hdc, const PIXELFORMATDESCRIPTOR* descriptor );
+extern BOOL( WINAPI* qwglMakeCurrent )( CseVideoDC hdc, CseVideoContext context );
+extern CseVideoContext( WINAPI* qwglCreateContext )( CseVideoDC hdc );
+extern BOOL( WINAPI* qwglSetPixelFormat )( CseVideoDC hdc, int format, const PIXELFORMATDESCRIPTOR* descriptor );
+extern int( WINAPI* qwglDescribePixelFormat )( CseVideoDC hdc, int format, UINT size, PIXELFORMATDESCRIPTOR* descriptor );
+extern int( WINAPI* qwglChoosePixelFormat )( CseVideoDC hdc, const PIXELFORMATDESCRIPTOR* descriptor );
 }
 #endif
 double gGLLowLatencyPrevPostFlipTimeMs;
@@ -243,25 +249,26 @@ void GL_Config()
 	}
 }
 
-void CheckTextureExtensions()
-{
-	if ( gl_extensions && Q_strstr( gl_extensions, "GL_EXT_paletted_texture" )
-		 && Q_strstr( gl_extensions, "GL_EXT_shared_texture_palette" ) )
-	{
-		qglColorTableEXT = (decltype( qglColorTableEXT ))SDL_GL_GetProcAddress( "glColorTableEXT" );
-		Con_DPrintf( "Found paletted texture extension.\n" );
-	}
-	else
-	{
-		qglColorTableEXT = NULL;
-	}
+void CheckTextureExtensions() {
+    if (gl_extensions && Q_strstr(gl_extensions, "GL_EXT_paletted_texture") &&
+        Q_strstr(gl_extensions, "GL_EXT_shared_texture_palette")) {
+        qglColorTableEXT = reinterpret_cast<decltype(qglColorTableEXT)>(
+            cse::render::RouteLegacyExtension("glColorTableEXT",
+                reinterpret_cast<cse::render::LegacyProcedure>(SDL_GL_GetProcAddress("glColorTableEXT"))));
+        Con_DPrintf("Found paletted texture extension.\n");
+    } else {
+        qglColorTableEXT = reinterpret_cast<decltype(qglColorTableEXT)>(
+            cse::render::RouteLegacyExtension("glColorTableEXT", nullptr));
+    }
 
-	if ( gl_extensions && Q_strstr( gl_extensions, "GL_EXT_texture_object " ) )
-	{
-		qglBindTexture = (decltype( qglBindTexture ))SDL_GL_GetProcAddress( "glBindTextureEXT" );
-		if ( !qglBindTexture )
-			Sys_Error( "GetProcAddress for BindTextureEXT failed" );
-	}
+    if (gl_extensions && Q_strstr(gl_extensions, "GL_EXT_texture_object ")) {
+        qglBindTexture = reinterpret_cast<decltype(qglBindTexture)>(
+            cse::render::RouteLegacyExtension("glBindTextureEXT",
+                reinterpret_cast<cse::render::LegacyProcedure>(SDL_GL_GetProcAddress("glBindTextureEXT"))));
+        if (!qglBindTexture) {
+            Sys_Error("GetProcAddress for BindTextureEXT failed");
+        }
+    }
 }
 
 void CheckMultiTextureExtensions()
@@ -269,8 +276,12 @@ void CheckMultiTextureExtensions()
 	if ( gl_extensions && Q_strstr( gl_extensions, "GL_ARB_multitexture " ) )
 	{
 		Con_DPrintf( "ARB Multitexture extensions found.\n" );
-		qglMTexCoord2fSGIS = (decltype( qglMTexCoord2fSGIS ))SDL_GL_GetProcAddress( "glMultiTexCoord2fARB" );
-		qglSelectTextureSGIS = (decltype( qglSelectTextureSGIS ))SDL_GL_GetProcAddress( "glActiveTextureARB" );
+        qglMTexCoord2fSGIS = reinterpret_cast<decltype(qglMTexCoord2fSGIS)>(
+            cse::render::RouteLegacyExtension("glMultiTexCoord2fARB",
+                reinterpret_cast<cse::render::LegacyProcedure>(SDL_GL_GetProcAddress("glMultiTexCoord2fARB"))));
+        qglSelectTextureSGIS = reinterpret_cast<decltype(qglSelectTextureSGIS)>(
+            cse::render::RouteLegacyExtension("glActiveTextureARB",
+                reinterpret_cast<cse::render::LegacyProcedure>(SDL_GL_GetProcAddress("glActiveTextureARB"))));
 		TEXTURE0_SGIS = GL_TEXTURE0_ARB;
 		TEXTURE1_SGIS = GL_TEXTURE1_ARB;
 		TEXTURE2_SGIS = GL_TEXTURE2_ARB;
@@ -295,8 +306,12 @@ void CheckMultiTextureExtensions()
 	else if ( gl_extensions && Q_strstr( gl_extensions, "GL_SGIS_multitexture " ) )
 	{
 		Con_DPrintf( "Multitexture extensions found.\n" );
-		qglMTexCoord2fSGIS = (decltype( qglMTexCoord2fSGIS ))SDL_GL_GetProcAddress( "glMTexCoord2fSGIS" );
-		qglSelectTextureSGIS = (decltype( qglSelectTextureSGIS ))SDL_GL_GetProcAddress( "glSelectTextureSGIS" );
+        qglMTexCoord2fSGIS = reinterpret_cast<decltype(qglMTexCoord2fSGIS)>(
+            cse::render::RouteLegacyExtension("glMTexCoord2fSGIS",
+                reinterpret_cast<cse::render::LegacyProcedure>(SDL_GL_GetProcAddress("glMTexCoord2fSGIS"))));
+        qglSelectTextureSGIS = reinterpret_cast<decltype(qglSelectTextureSGIS)>(
+            cse::render::RouteLegacyExtension("glSelectTextureSGIS",
+                reinterpret_cast<cse::render::LegacyProcedure>(SDL_GL_GetProcAddress("glSelectTextureSGIS"))));
 		TEXTURE0_SGIS = GL_TEXTURE0_SGIS;
 		TEXTURE1_SGIS = GL_TEXTURE1_SGIS;
 		TEXTURE2_SGIS = GL_TEXTURE2_SGIS;
@@ -746,7 +761,7 @@ void FreeFBOObjects()
 	ReleaseFBOContainer( &s_BackBufferFBO );
 }
 
-int GL_SetMode(HWND mainwindow, HDC *pmaindc, HGLRC *pbaseRC, int, const char *pszDriver, const char *pszCmdLine) {
+int GL_SetMode(CseGameWindowHandle mainwindow, CseVideoDC *pmaindc, CseVideoContext *pbaseRC, int, const char *pszDriver, const char *pszCmdLine) {
     const char *extensions;
     int windowed;
     int wide = 0, tall = 0;
@@ -757,14 +772,14 @@ int GL_SetMode(HWND mainwindow, HDC *pmaindc, HGLRC *pbaseRC, int, const char *p
 
 #if defined(_WIN32)
     if (gD3DMode) {
-        HWND wminfo = nullptr;
-        wminfo = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties((SDL_Window *)mainwindow),
+        CseGameWindowHandle wminfo = nullptr;
+        wminfo = static_cast<CseGameWindowHandle>(SDL_GetPointerProperty(SDL_GetWindowProperties((SDL_Window *)mainwindow),
                                                           SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
         *pmaindc = GetDC(wminfo);
         s_BackBufferFBO.s_hBackBufferFBO = 0;
 
         if (!s_bPixelFormatSet) {
-            HDC hdc = *pmaindc;
+            CseVideoDC hdc = *pmaindc;
             int pixelformat;
 
             s_bPixelFormatSet = 1;
@@ -813,6 +828,7 @@ int GL_SetMode(HWND mainwindow, HDC *pmaindc, HGLRC *pbaseRC, int, const char *p
         bDoScaledFBO = 0;
     }
 
+#if defined(_WIN32)
     int frequencyParm = COM_CheckParm("-freq");
     if (frequencyParm && bDoScaledFBO) {
         if (VideoMode_IsWindowed()) {
@@ -830,6 +846,8 @@ int GL_SetMode(HWND mainwindow, HDC *pmaindc, HGLRC *pbaseRC, int, const char *p
             }
         }
     }
+
+#endif
 
     QGL_Init(pszDriver, pszCmdLine);
 
@@ -971,7 +989,7 @@ int GL_SetMode(HWND mainwindow, HDC *pmaindc, HGLRC *pbaseRC, int, const char *p
     return 1;
 }
 
-void GL_Shutdown( HWND, HDC, HGLRC )
+void GL_Shutdown( CseGameWindowHandle, CseVideoDC, CseVideoContext )
 {
 	FreeFBOObjects();
 }

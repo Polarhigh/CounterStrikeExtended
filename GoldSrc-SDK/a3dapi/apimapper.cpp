@@ -1,3 +1,4 @@
+#include "native_platform.h"
 #include "ChunkPage.h"
 #include "apimapper.h"
 #include "A3d3.h"
@@ -13,15 +14,24 @@ CA3dCommandBuffer::CA3dCommandBuffer( int cCapacity, int iBufferType )
 	m_cCapacity = 0;
 	m_cCommands = 0;
 
-	size_t commandBytes = (DWORD)cCapacity * sizeof( a3d_geometry_command_t );
-	m_pCommands = (a3d_geometry_command_t*)::operator new( commandBytes, std::nothrow );
+    size_t commandBytes = (DWORD)cCapacity * sizeof(a3d_geometry_command_t);
+    size_t allocationBytes = commandBytes;
+#if UINTPTR_MAX > UINT32_MAX
+    static_assert(alignof(a3d_geometry_command_t) >= alignof(A3dGeometryIdentity), "sidecar alignment");
+    allocationBytes += (DWORD)cCapacity * sizeof(A3dGeometryIdentity);
+#endif
+    m_pCommands = (a3d_geometry_command_t*)::operator new(allocationBytes, std::nothrow);
+#if UINTPTR_MAX > UINT32_MAX
+    m_pIdentities = m_pCommands ? reinterpret_cast<A3dGeometryIdentity*>(
+        reinterpret_cast<unsigned char*>(m_pCommands) + commandBytes) : nullptr;
+#endif
 	if ( m_pCommands )
 	{
 		m_cCapacity = cCapacity;
 		m_iCursor = 0;
 	}
 
-	memset( m_pCommands, 0, commandBytes );
+    memset(m_pCommands, 0, allocationBytes);
 	m_iBufferType = iBufferType;
 }
 
@@ -50,6 +60,10 @@ int __cdecl CommandBuffer_Copy( CA3dCommandBuffer* pDest, int iDest,
 
 	DWORD commandBytes = (DWORD)cCommands * sizeof( a3d_geometry_command_t );
 	memcpy( &pDest->m_pCommands[iDest], &pSource->m_pCommands[iSource], commandBytes );
+#if UINTPTR_MAX > UINT32_MAX
+    memcpy(&pDest->m_pIdentities[iDest], &pSource->m_pIdentities[iSource],
+        static_cast<size_t>(cCommands) * sizeof(A3dGeometryIdentity));
+#endif
 
 	return cCommands;
 }
@@ -104,13 +118,13 @@ HRESULT STDMETHODCALLTYPE CA3dMapperSecBuffer::QueryInterface( REFIID iid, void*
 
 ULONG STDMETHODCALLTYPE CA3dMapperSecBuffer::AddRef()
 {
-	InterlockedIncrement( &m_cReferences );
+	A3dReferenceIncrement( &m_cReferences );
 	return m_cReferences;
 }
 
 ULONG STDMETHODCALLTYPE CA3dMapperSecBuffer::Release()
 {
-	InterlockedDecrement( &m_cReferences );
+	A3dReferenceDecrement( &m_cReferences );
 	ULONG cReferences = m_cReferences;
 	if ( !cReferences )
 	{
@@ -600,13 +614,13 @@ HRESULT STDMETHODCALLTYPE CA3dMapper::QueryInterface( REFIID iid, void** ppObjec
 
 ULONG STDMETHODCALLTYPE CA3dMapper::AddRef()
 {
-	InterlockedIncrement( &m_cReferences );
+	A3dReferenceIncrement( &m_cReferences );
 	return m_cReferences;
 }
 
 ULONG STDMETHODCALLTYPE CA3dMapper::Release()
 {
-	InterlockedDecrement( &m_cReferences );
+	A3dReferenceDecrement( &m_cReferences );
 	ULONG cReferences = m_cReferences;
 	if ( !cReferences )
 	{
@@ -784,13 +798,13 @@ HRESULT STDMETHODCALLTYPE CA3dMapperPrimBuffer::QueryInterface( REFIID iid, void
 
 ULONG STDMETHODCALLTYPE CA3dMapperPrimBuffer::AddRef()
 {
-	InterlockedIncrement( &m_cReferences );
+	A3dReferenceIncrement( &m_cReferences );
 	return m_cReferences;
 }
 
 ULONG STDMETHODCALLTYPE CA3dMapperPrimBuffer::Release()
 {
-	InterlockedDecrement( &m_cReferences );
+	A3dReferenceDecrement( &m_cReferences );
 	ULONG cReferences = m_cReferences;
 	if ( !cReferences )
 	{

@@ -1,4 +1,5 @@
 #include "engine_apiproxy.h"
+#include "../public/native_module.h"
 #include "blob.h"
 #include "cmd.h"
 #include "common.h"
@@ -35,6 +36,9 @@ void NullDst()
 {
 }
 
+void NullClientMousePositionAndCenterDst(int **, int **, int **, int **) {
+}
+
 cl_enginefunc_dst_t g_engdstAddrs = k_engdstNull;
 cldll_func_dst_t g_cldstAddrs = k_cldstNull;
 
@@ -68,17 +72,8 @@ void CloseSecurityModule()
 }
 
 #if !defined( _WIN32 )
-void* GetModuleHandle( char* name )
-{
-	if ( !name )
-		return NULL;
-
-	void* handle = dlopen( name, RTLD_NOW );
-	if ( !handle )
-		return NULL;
-
-	dlclose( handle );
-	return handle;
+void* GetModuleHandle(char* name) {
+    return cse_platform::FindLoadedModule(name);
 }
 
 void CommonLoadSecurityModule( void* nAddrModule )

@@ -7,8 +7,11 @@
 #include <string.h>
 #include <float.h>
 #include <limits.h>
+#include <stdint.h>
 #include <math.h>
+#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
 #include <xmmintrin.h>
+#endif
 
 #define A3D_MIX_IMPULSE_SCALE	3.0518509476e-05
 
@@ -90,8 +93,13 @@ LONG __cdecl Mixer_PrepareChannelRate( a3d_mix_channel_t* pChannel, a3d_mix_voic
 	LONG delayStep = delayDifference / (LONG)cFrames;
 	pChannel->lDelayCurrent = (LONG)( (DWORD)pChannel->lDelayCurrent - (DWORD)delayStep * cFrames );
 	LONG rate = (LONG)( (DWORD)pVoice->lRateCurrent + delayStep );
-	if ( rate < 0 )
-		__debugbreak();
+    if (rate < 0) {
+#ifdef _WIN32
+        __debugbreak();
+#else
+        __builtin_debugtrap();
+#endif
+    }
 	return rate;
 }
 
@@ -166,6 +174,12 @@ static DWORD Mixer_Mix16Mono( float* pOutput, a3d_mix_channel_t* pChannel,
 		phase = ( phase & ~MIXER_PHASE_FRACTION_MASK ) | ( phaseSum & MIXER_PHASE_FRACTION_MASK );
 		sample = (LONG)( (DWORD)sample + ( rate >> MIXER_PHASE_FRACTION_BITS ) +
 			( phaseSum >> MIXER_PHASE_FRACTION_BITS ) );
+#ifndef _WIN32
+        // Observe the actual direct kernel step before its modulo projection.
+        // This never participates in the retained sample/rate/PCM arithmetic.
+        pChannel->nativeAdvancedFrames += (rate >> MIXER_PHASE_FRACTION_BITS) +
+            (phaseSum >> MIXER_PHASE_FRACTION_BITS);
+#endif
 		rate += rateStep;
 		*pOutput = (float)( contribution + *pOutput );
 		pOutput += 2;
@@ -244,6 +258,12 @@ static DWORD Mixer_MixChannel( float* pOutput, a3d_mix_channel_t* pChannel,
 		phase = ( phase & ~MIXER_PHASE_FRACTION_MASK ) | ( phaseSum & MIXER_PHASE_FRACTION_MASK );
 		sample = (LONG)( (DWORD)sample + ( rate >> MIXER_PHASE_FRACTION_BITS ) +
 			( phaseSum >> MIXER_PHASE_FRACTION_BITS ) );
+#ifndef _WIN32
+        // Observe the actual direct kernel step before its modulo projection.
+        // This never participates in the retained sample/rate/PCM arithmetic.
+        pChannel->nativeAdvancedFrames += (rate >> MIXER_PHASE_FRACTION_BITS) +
+            (phaseSum >> MIXER_PHASE_FRACTION_BITS);
+#endif
 		rate += rateStep;
 		*pOutput = (float)( contribution + *pOutput );
 		pOutput += 2;
@@ -514,13 +534,22 @@ static const mixer_filter_coefficients_t filter44kHz =
 	}
 };
 
-void Mixer_ResetFloatState()
-{
+void Mixer_ResetFloatState() {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    // ARM64 has no separate x87 environment to reset. Preserve the mixer FPCR and FPSR,
+    // just as the Intel path preserves its complete SIMD control and status register.
+#elif defined(_M_X64) || defined(__x86_64__)
+    unsigned int control = _mm_getcsr();
+    _fpreset();
+    // The x64 CRT does not support x87 precision control and asserts on _MCW_PC in Debug.
+    _mm_setcsr(control);
+#else
 	unsigned int control = _mm_getcsr();
 	_fpreset();
 	unsigned int x87Control;
 	_controlfp_s( &x87Control, _PC_64, _MCW_PC );
 	_mm_setcsr( control );
+#endif
 }
 
 void __cdecl Mixer_InitializeFilters( void* pUnused, mixer_filter_state_t* pState, DWORD sampleRate )
@@ -627,37 +656,43 @@ int __cdecl Mixer_FilterStereo( float* pSamples, SHORT mode, mixer_filter_state_
 	return 0;
 }
 
-void __cdecl Mixer_FloatToPcm16( const float* pInput, short* pOutput, DWORD sampleCount )
-{
-	if ( !sampleCount )
-		return;
+void __cdecl Mixer_FloatToPcm16(const float* pInput, short* pOutput, DWORD sampleCount) {
+    if (!sampleCount) {
+        return;
+    }
 
-	Mixer_ResetFloatState();
-	while ( sampleCount )
-	{
-		DWORD count = sampleCount & 1 ? 1 : sampleCount & 2 ? 2 : 4;
-		long samples[4];
-		for ( DWORD i = 0; i < count; i++ )
-		{
-			double sample = pInput[i];
-			if ( sample >= LONG_MIN && sample <= LONG_MAX )
-				samples[i] = lrint( sample );
-			else
-				samples[i] = LONG_MIN;
-		}
-		for ( DWORD i = 0; i < count; i++ )
-		{
-			if ( samples[i] > SHRT_MAX )
-				pOutput[i] = SHRT_MAX;
-			else if ( samples[i] < SHRT_MIN )
-				pOutput[i] = SHRT_MIN;
-			else
-				pOutput[i] = (short)samples[i];
-		}
-		pInput += count;
-		pOutput += count;
-		sampleCount -= count;
-	}
+    // Windows LONG remains signed 32-bit on Win32 and native Windows. Host
+    // long is 64-bit on LP64 and must not widen the invalid-conversion lane.
+    constexpr LONG kWindowsLongMinimum = INT32_MIN;
+    constexpr LONG kWindowsLongMaximum = INT32_MAX;
+    constexpr DWORD kConversionPairSamples = 2;
+    constexpr DWORD kConversionBatchSamples = 4;
+    Mixer_ResetFloatState();
+    while (sampleCount) {
+        DWORD count = sampleCount & 1 ? 1 : sampleCount & kConversionPairSamples ?
+            kConversionPairSamples : kConversionBatchSamples;
+        LONG samples[kConversionBatchSamples];
+        for (DWORD i = 0; i < count; i++) {
+            double sample = pInput[i];
+            if (sample >= kWindowsLongMinimum && sample <= kWindowsLongMaximum) {
+                samples[i] = static_cast<LONG>(lrint(sample));
+            } else {
+                samples[i] = kWindowsLongMinimum;
+            }
+        }
+        for (DWORD i = 0; i < count; i++) {
+            if (samples[i] > SHRT_MAX) {
+                pOutput[i] = SHRT_MAX;
+            } else if (samples[i] < SHRT_MIN) {
+                pOutput[i] = SHRT_MIN;
+            } else {
+                pOutput[i] = static_cast<short>(samples[i]);
+            }
+        }
+        pInput += count;
+        pOutput += count;
+        sampleCount -= count;
+    }
 }
 
 static const float resampleCoefficients[MIXER_RESAMPLE_PHASES][4] =

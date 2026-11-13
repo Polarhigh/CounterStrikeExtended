@@ -1,5 +1,8 @@
 #pragma once
 
+#include "cse_entity.h"
+#include <cstddef>
+
 #include "server.h"
 #include "cmd.h"
 #include "crc.h"
@@ -33,7 +36,7 @@ edict_t*			PVSFindEntities( edict_t* player );
 void				PF_makevectors_I( const float* angles );
 edict_t*			PF_Spawn_I();
 void				PF_Remove_I( edict_t* entity );
-edict_t*			CreateNamedEntity( int classname );
+edict_t*			CreateNamedEntity( string_t classname );
 void				PF_makestatic_I( edict_t* entity );
 int					PF_checkbottom_I( edict_t* entity );
 int					PF_droptofloor_I( edict_t* entity );
@@ -89,18 +92,18 @@ void				EngineFprintf( void* file, char* format, ... );
 void				ClientPrintf( edict_t* entity, PRINT_TYPE type, const char* message );
 void				ServerPrint( const char* message );
 
-void*				PvAllocEntPrivateData( edict_t* entity, int32 size );
+void *PvAllocEntPrivateData(edict_t *entity, std::size_t bytes);
 void*				PvEntPrivateData( edict_t* entity );
-const char*			SzFromIndex( int index );
-int					AllocEngineString( const char* value );
+const char*			SzFromIndex( string_t index );
+string_t					AllocEngineString( const char* value );
 entvars_t*			GetVarsOfEnt( edict_t* entity );
-edict_t*			PEntityOfEntOffset( int offset );
-int					EntOffsetOfPEntity( const edict_t* entity );
+edict_t*			PEntityOfEntOffset( EOFFSET offset );
+EOFFSET					EntOffsetOfPEntity( const edict_t* entity );
 edict_t*			PEntityOfEntIndex( int index );
 edict_t*			PEntityOfEntIndexAllEntities( int index );
 edict_t*			FindEntityByVars( entvars_t* variables );
-uint32				FunctionFromName( const char* name );
-const char*			NameForFunction( uint32 address );
+CseSymbolAddress FunctionFromName(const char *name);
+const char *NameForFunction(CseSymbolAddress address);
 
 void*				GetModelPtr( edict_t* entity );
 void				AnimationAutomove( const edict_t* entity, float time );
@@ -156,7 +159,7 @@ void				DELTA_AddEncoder( char* name, encoder_t conditionalencode );
 int					PF_GetCurrentPlayer();
 int					PF_CanSkipPlayer( const edict_t* player );
 void				PF_SetGroupMask( int mask, int operation );
-int					PF_CreateInstancedBaseline( int classname, entity_state_t* baseline );
+int					PF_CreateInstancedBaseline( string_t classname, entity_state_t* baseline );
 void				PF_ForceUnmodified( FORCE_TYPE type, float* mins, float* maxs, const char* filename );
 
 qboolean			Voice_GetClientListening( int receiver, int sender );
@@ -175,3 +178,5 @@ void				ResetTutorMessageDecayData();
 
 void				QueryClientCvarValue( const edict_t* player, const char* cvarName );
 void				QueryClientCvarValue2( const edict_t* player, const char* cvarName, int requestID );
+
+string_t GetWorldspawnString(const char *key);

@@ -29,8 +29,8 @@ inline void MESSAGE_BEGIN( int msg_dest, int msg_type, const float *pOrigin, ent
 extern globalvars_t				*gpGlobals;
 
 // Use this instead of ALLOC_STRING on constant strings
-#define STRING(offset)		((const char *)(gpGlobals->pStringBase + (unsigned int)(offset)))
-#define MAKE_STRING(str)	((uint64)(str) - (uint64)(STRING(0)))
+#define STRING(offset) CseStringAddress(gpGlobals->pStringBase, static_cast<string_t>(offset))
+#define MAKE_STRING(str) CseStringOffset(gpGlobals->pStringBase, (str))
 
 inline edict_t *FIND_ENTITY_BY_CLASSNAME(edict_t *entStart, const char *pszName) 
 {
@@ -71,13 +71,15 @@ inline edict_t *FIND_ENTITY_BY_TARGET(edict_t *entStart, const char *pszName)
 #define CONSTANT
 
 // More explicit than "int"
-typedef int EOFFSET;
+#include "cse_entity.h"
 
 // In case it's not alread defined
 typedef int BOOL;
 
 // In case this ever changes
+#ifndef M_PI
 #define M_PI			3.14159265358979323846
+#endif
 
 // Keeps clutter down a bit, when declaring external entity/global method prototypes
 #define DECLARE_GLOBAL_METHOD(MethodName)  extern void UTIL_DLLEXPORT MethodName( void )
@@ -145,14 +147,14 @@ inline void MESSAGE_BEGIN( int msg_dest, int msg_type, const float *pOrigin, ent
 }
 
 // Testing the three types of "entity" for nullity
-#define eoNullEntity 0
+#define eoNullEntity cse::entities::WorldOffset
 inline BOOL FNullEnt(EOFFSET eoffset)			{ return eoffset == 0; }
 inline BOOL FNullEnt(const edict_t* pent)	{ return pent == NULL || FNullEnt(OFFSET(pent)); }
 inline BOOL FNullEnt(entvars_t* pev)				{ return pev == NULL || FNullEnt(OFFSET(pev)); }
 
 // Testing strings for nullity
 #define iStringNull 0
-inline BOOL FStringNull(int iString)			{ return iString == iStringNull; }
+inline BOOL FStringNull(string_t iString)			{ return iString == iStringNull; }
 
 #define cchMapNameMost 32
 

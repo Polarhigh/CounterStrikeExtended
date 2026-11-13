@@ -20,9 +20,11 @@
 
 #include <string.h>
 #include "../../public/interface.h"
+#include "../../public/runtime_module_names.h"
 #include "hud.h"
 #include "cl_util.h"
 #include "../../cl_dll/Exports.h"
+#include "../../common/client_module_entry.h"
 #include "particleman.h"
 #include "tri.h"
 #include "cl_dll/IGameClientExports.h"
@@ -127,6 +129,10 @@ void CL_LoadParticleMan()
 
 extern "C" int EXPORT Initialize( cl_enginefunc_t* pEnginefuncs, int iVersion )
 {
+    if (!CseClientConsumeInitializationAuthorization()) {
+        return 0;
+    }
+
 	memcpy( &gEngfuncs, pEnginefuncs, sizeof( cl_enginefunc_t ) );
 
 //	RecClInitialize(pEnginefuncs, iVersion);
@@ -137,7 +143,7 @@ extern "C" int EXPORT Initialize( cl_enginefunc_t* pEnginefuncs, int iVersion )
 	EV_HookEvents();
 	CL_LoadParticleMan();
 
-	const char* szFsModule = "filesystem_stdio.dll";
+	const char* szFsModule = cse::runtime_modules::FileSystem;
 	char szFSDir[MAX_PATH];
 	szFSDir[0] = 0;
 	if ( gEngfuncs.COM_ExpandFilename( szFsModule, szFSDir, sizeof( szFSDir ) ) == FALSE )
@@ -158,7 +164,7 @@ extern "C" int EXPORT Initialize( cl_enginefunc_t* pEnginefuncs, int iVersion )
 		return false;
 
 	char szDir[512];
-	if ( gEngfuncs.COM_ExpandFilename( "cl_dlls\\GameUI.dll", szDir, sizeof( szDir ) ) )
+	if ( gEngfuncs.COM_ExpandFilename( cse::runtime_modules::GameUI, szDir, sizeof( szDir ) ) )
 	{
 		g_hGameUIModule = Sys_LoadModule( szDir );
 		if ( !g_hGameUIModule )
@@ -224,6 +230,11 @@ extern "C" int EXPORT HUD_GetHullBounds( int hullnumber, float* mins, float* max
 		break;
 	}
 
+#if !defined(_WIN32)
+    // Retain the legacy pointer-only assignments without changing caller bounds.
+    (void)mins;
+    (void)maxs;
+#endif
 	return iret;
 }
 
@@ -351,6 +362,10 @@ extern "C" CreateInterfaceFn EXPORT ClientFactory()
 
 extern "C" void EXPORT F( void* buffer )
 {
+    if (!CseClientConsumeFunctionAuthorization()) {
+        return;
+    }
+
 	cldll_func_t* destination = (cldll_func_t*)buffer;
 	memcpy( &g_modfuncs, (void*)destination->pInitFunc, sizeof( g_modfuncs ) );
 	g_pcldstAddrs = (cldll_func_dst_t*)destination->pHudVidInitFunc;
@@ -397,3 +412,8 @@ public:
 };
 
 EXPOSE_SINGLE_INTERFACE( CClientExports, IGameClientExports, GAMECLIENTEXPORTS_INTERFACE_VERSION );
+
+#define CSE_CLIENT_ABI_CS
+
+#include "../../common/client_module_types.h"
+#include "../../common/client_module_entry_impl.h"

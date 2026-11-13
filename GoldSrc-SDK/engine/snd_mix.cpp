@@ -3,9 +3,13 @@
 #endif
 
 #include "sound.h"
+#include "sound_callback.h"
+#include "sound_backend_config.h"
+#include "vox_word.h"
 #include "mem.h"
 #include "common.h"
 #include "conprint.h"
+#include "sys.h"
 #include "client.h"
 #include "cvar.h"
 #include "filesystem.h"
@@ -13,9 +17,11 @@
 #include "../common/const.h"
 #include "../common/Sequence.h"
 
+#if !CSE_SOUND_USE_SDL
 #include <windows.h>
 #include <mmsystem.h>
 #include <dsound.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -30,29 +36,10 @@
 #define _vsnprintf vsnprintf
 #endif
 
-#if defined( _WIN32 )
-#include <cassert>
-#if defined( NDEBUG )
-extern "C" _ACRTIMP void __cdecl _wassert( const wchar_t* message, const wchar_t* file, unsigned int line );
-#endif
-#endif
-
-typedef struct voxword
-{
-	int volume;
-	int pitch;
-	int start;
-	int end;
-	int cbtrim;
-	int fKeepCached;
-	int samplefrac;
-	int timecompress;
-	sfx_t* sfx;
-} voxword_t;
+#include "cse_assert.h"
 
 constexpr int MAX_VOX_SENTENCES = 16;
 constexpr int MAX_VOX_WORDS = 32;
-static_assert( sizeof( voxword_t ) == 36 );
 
 voxword_t rgrgvoxword[MAX_VOX_SENTENCES][MAX_VOX_WORDS];
 char* rgpparseword[MAX_VOX_WORDS];
@@ -80,11 +67,16 @@ typedef struct dlyline_s
 	int lp2;
 	int mod;
 	int modcur;
+#if defined(_WIN32)
 	HANDLE hdelayline;
+#else
+    void* hdelayline;
+#endif
 	sample_t* lpdelayline;
 } dlyline_t;
 
-static_assert( sizeof( dlyline_t ) == 60 );
+// The delay buffer handle/pointer are native ownership; PCM samples remain 16-bit.
+static_assert(sizeof(dlyline_t) == (sizeof(void*) == 4 ? 60 : 72));
 
 constexpr int CSXDLYMAX = 4;
 constexpr int ISXMONODLY = 0;
@@ -355,9 +347,13 @@ extern "C" void VOX_ReadSentenceFile()
 			*cursor++ = 0;
 		if ( name )
 		{
-			std::size_t bytes = std::strlen( name ) + std::strlen( words ) + 2;
-			rgpszrawsentence[count] = static_cast<char*>( Mem_Malloc( bytes ) );
-			Q_memcpy( rgpszrawsentence[count], name, bytes );
+            const std::size_t bytes = std::strlen(name) + std::strlen(words) + 2;
+            if (bytes > INT_MAX) {
+                Sys_Error("VOX_ReadSentenceFile: sentence exceeds native allocation interface");
+            }
+            const int allocationBytes = static_cast<int>(bytes);
+            rgpszrawsentence[count] = static_cast<char*>(Mem_Malloc(allocationBytes));
+            Q_memcpy(rgpszrawsentence[count], name, allocationBytes);
 			if ( ++count >= MAX_SENTENCES )
 				break;
 		}
@@ -1414,9 +1410,6 @@ int VOX_FPaintPitchChannelFrom8Offs( portable_samplepair_t* output, channel_t* c
 
 float g_SND_VoiceOverdrive = 1.0f;
 
-typedef int ( *soundDataCallback_t )(
-	sfxcache_t* cache, char* output, int outputBytes, int samplePosition, int sampleCount );
-
 void SND_MoveMouth( channel_t* channel, sfxcache_t* cache, int count )
 {
 	mouth_t& mouth = cl_entities[channel->entnum].mouth;
@@ -1560,7 +1553,10 @@ void S_MixChannelsToPaintbuffer( int end, int fPaintHiresSounds, int voiceOnly )
 					short* data;
 					if ( callbackSound )
 					{
-						soundDataCallback_t callback = reinterpret_cast<soundDataCallback_t>( cache->loopstart );
+                        const auto callback = cse::sound::ResolveDataCallback(cache->loopstart);
+                        if (!callback) {
+                            break;
+                        }
 						count = callback( cache, voiceBuffer, sizeof( voiceBuffer ), channel->pos, count );
 						data = reinterpret_cast<short*>( voiceBuffer );
 					}
@@ -1592,8 +1588,10 @@ void S_MixChannelsToPaintbuffer( int end, int fPaintHiresSounds, int voiceOnly )
 	}
 }
 
+#if !CSE_SOUND_USE_SDL
 extern LPDIRECTSOUNDBUFFER pDSBuf;
 extern DWORD gSndBufSize;
+#endif
 extern cvar_t volume;
 
 static int s_careerAudioPaused;
@@ -1612,114 +1610,14 @@ void SetCareerAudioState( int paused )
 	s_careerAudioPaused = paused;
 }
 
-void Snd_WriteLinearBlastStereo16()
-{
-	constexpr int SOUND_VOLUME_SHIFT = 8;
-	for ( int i = 0; i < snd_linear_count; i += 2 )
-	{
-		int left = ( snd_p[i] * snd_vol ) >> SOUND_VOLUME_SHIFT;
-		int right = ( snd_p[i + 1] * snd_vol ) >> SOUND_VOLUME_SHIFT;
-		snd_out[i] = static_cast<short>( ( std::clamp )( left, SOUND_SAMPLE_MIN, SOUND_SAMPLE_MAX ) );
-		snd_out[i + 1] = static_cast<short>( ( std::clamp )( right, SOUND_SAMPLE_MIN, SOUND_SAMPLE_MAX ) );
-	}
-}
+#include "sound_transfer_impl.h"
 
-#if defined( _MSC_VER )
-#pragma warning( push )
-#pragma warning( disable : 4701 )
-#endif
-void S_TransferStereo16( int end )
-{
-	constexpr float SOUND_VOLUME_SCALE_FLOAT = 256.0f;
-	constexpr int STEREO_CHANNELS = 2;
-	constexpr int SOUND_BUFFER_LOCK_RETRIES = 10000;
-	void* data;
-	DWORD dataSize;
-	void* secondData;
-	DWORD secondSize;
-
-	snd_vol = static_cast<int>( volume.value * SOUND_VOLUME_SCALE_FLOAT );
-	snd_p = reinterpret_cast<int*>( paintbuffer );
-	int position = paintedtime * STEREO_CHANNELS;
-	int endPosition = end * STEREO_CHANNELS;
-
-	if ( pDSBuf )
-	{
-		int retries = 0;
-		HRESULT result;
-		while ( ( result = pDSBuf->Lock( 0, gSndBufSize, &data, &dataSize, &secondData, &secondSize, 0 ) ) != DS_OK )
-		{
-			if ( result != DSERR_BUFFERLOST )
-			{
-				Con_Printf( "S_TransferStereo16: DS::Lock Sound Buffer Failed\n" );
-				S_Shutdown();
-				S_Startup();
-				return;
-			}
-			if ( ++retries > SOUND_BUFFER_LOCK_RETRIES )
-			{
-				Con_Printf( "S_TransferStereo16: DS: couldn't restore buffer\n" );
-				S_Shutdown();
-				S_Startup();
-				return;
-			}
-		}
-	}
-	else
-	{
-		data = shm->buffer;
-	}
-
-	while ( position < endPosition )
-	{
-		int frameCount = shm->samples >> 1;
-		int frame = position & ( frameCount - 1 );
-		snd_out = static_cast<short*>( data ) + frame * STEREO_CHANNELS;
-		int count = frameCount - frame;
-		if ( count > endPosition - position )
-			count = endPosition - position;
-		snd_linear_count = count * STEREO_CHANNELS;
-		// write a linear blast of samples
-		Snd_WriteLinearBlastStereo16();
-		snd_p += snd_linear_count;
-		position += snd_linear_count >> 1;
-	}
-
-	if ( pDSBuf )
-		pDSBuf->Unlock( data, dataSize, nullptr, 0 );
-}
-#if defined( _MSC_VER )
-#pragma warning( pop )
-#endif
-
-void S_TransferPaintBuffer( int endtime )
-{
-#if defined( _WIN32 )
-	if ( shm->samplebits != 16 || shm->channels != 2 )
-		_wassert( L"shm->samplebits == 16 && shm->channels == 2", L"c:\\buildslave\\goldsrc_win32\\build\\GoldSrc\\engine\\snd_mix.c", 456 );
-	S_TransferStereo16( endtime );
-#else
-	constexpr float SOUND_VOLUME_SCALE_FLOAT = 256.0f;
-	constexpr int STEREO_CHANNELS = 2;
-	snd_p = reinterpret_cast<int*>( paintbuffer );
-	snd_vol = static_cast<int>( SOUND_VOLUME_SCALE_FLOAT * volume.value );
-	int position = paintedtime * STEREO_CHANNELS;
-	int endPosition = endtime * STEREO_CHANNELS;
-	unsigned char* buffer = shm->buffer;
-	while ( position < endPosition )
-	{
-		int frameCount = shm->samples >> 1;
-		int frame = position & ( frameCount - 1 );
-		int count = frameCount - frame;
-		if ( count > endPosition - position )
-			count = endPosition - position;
-		snd_linear_count = count * STEREO_CHANNELS;
-		snd_out = reinterpret_cast<short*>( buffer ) + frame * STEREO_CHANNELS;
-		Snd_WriteLinearBlastStereo16();
-		position += snd_linear_count >> 1;
-		snd_p += snd_linear_count;
-	}
-#endif
+void S_TransferPaintBuffer(int endtime) {
+    if (shm->samplebits != 16 || shm->channels != 2) {
+        cse::platform::UtlAssertionFailure(L"shm->samplebits == 16 && shm->channels == 2",
+            L"c:\\buildslave\\goldsrc_win32\\build\\GoldSrc\\engine\\snd_mix.c", 456);
+    }
+    S_TransferStereo16(endtime);
 }
 
 void S_PaintChannels( int endtime )

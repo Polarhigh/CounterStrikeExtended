@@ -22,6 +22,7 @@
 
 #include <vector>
 #include "extdll.h"
+#include "native_int_count.h"
 #include "util.h"
 #include "cbase.h"
 #include "player.h"
@@ -1135,19 +1136,7 @@ void CBasePlayer::ClearAutoBuyData()
 	m_autoBuyString[0] = '\0';
 }
 
-void CBasePlayer::AddAutoBuyData(const char *data)
-{
-	int length = strlen(m_autoBuyString);
-	if (length <= 254)
-	{
-		if (length > 0)
-		{
-			m_autoBuyString[length++] = ' ';
-			m_autoBuyString[length] = '\0';
-		}
-		strncat(m_autoBuyString, data, sizeof(m_autoBuyString) - length);
-	}
-}
+#include "autobuy_string_impl.h"
 
 void CBasePlayer::InitRebuyData(const char *data)
 {
@@ -1499,7 +1488,7 @@ const char *CBasePlayer::PickPrimaryCareerTaskWeapon()
 
 	if (taskVector.size() > 1)
 	{
-		int index = RANDOM_LONG(0, taskVector.size() - 1);
+		int index = RANDOM_LONG(0, cse::counts::IntCount(taskVector.size() - 1));
 		CCareerTask *task = taskVector[0];
 		taskVector[0] = taskVector[index];
 		taskVector[index] = task;
@@ -1543,7 +1532,7 @@ const char *CBasePlayer::PickSecondaryCareerTaskWeapon()
 
 	if (taskVector.size() > 1)
 	{
-		int index = RANDOM_LONG(0, taskVector.size() - 1);
+		int index = RANDOM_LONG(0, cse::counts::IntCount(taskVector.size() - 1));
 		CCareerTask *task = taskVector[0];
 		taskVector[0] = taskVector[index];
 		taskVector[index] = task;
@@ -3235,7 +3224,7 @@ void CBasePlayer::WaterMove()
 			pev->dmg++;
 			if ( pev->dmg > 5 )
 				pev->dmg = 5;
-			TakeDamage( VARS( ENT( 0 ) ), VARS( ENT( 0 ) ), pev->dmg, DMG_DROWN );
+			TakeDamage( VARS( ENT(eoNullEntity) ), VARS( ENT(eoNullEntity) ), pev->dmg, DMG_DROWN );
 			pev->pain_finished = gpGlobals->time + 1;
 			m_idrowndmg = (int)( m_idrowndmg + pev->dmg );
 		}
@@ -3293,12 +3282,12 @@ void CBasePlayer::WaterMove()
 	if ( pev->watertype == CONTENTS_LAVA )		// do damage
 	{
 		if ( gpGlobals->time > pev->dmgtime )
-			TakeDamage( VARS( ENT( 0 ) ), VARS( ENT( 0 ) ), (float)( 10 * pev->waterlevel ), DMG_BURN );
+			TakeDamage( VARS( ENT(eoNullEntity) ), VARS( ENT(eoNullEntity) ), (float)( 10 * pev->waterlevel ), DMG_BURN );
 	}
 	else if ( pev->watertype == CONTENTS_SLIME )		// do damage
 	{
 		pev->dmgtime = gpGlobals->time + 1;
-		TakeDamage( VARS( ENT( 0 ) ), VARS( ENT( 0 ) ), (float)( 4 * pev->waterlevel ), DMG_ACID );
+		TakeDamage( VARS( ENT(eoNullEntity) ), VARS( ENT(eoNullEntity) ), (float)( 4 * pev->waterlevel ), DMG_ACID );
 	}
 	if ( !( pev->flags & FL_INWATER ) )
 	{
@@ -6594,3 +6583,5 @@ void CBasePlayer::CheatImpulseCommands( int impulse )
 		break;
 	}
 }
+
+#include "generated_saved_callbacks/player.inc"

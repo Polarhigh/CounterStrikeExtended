@@ -105,7 +105,7 @@ IMPLEMENT_SAVERESTORE( CWeaponBox, CBaseEntity );
 // you the maximum amount of that type of ammunition that a 
 // player can carry.
 //=========================================================
-int MaxAmmoCarry( int iszName )
+int MaxAmmoCarry( string_t iszName )
 {
 	for ( int i = 0; i < MAX_WEAPONS; ++i )
 	{
@@ -1243,7 +1243,7 @@ int CWeaponBox::GiveAmmo( int iCount, char* szName, int iMax, int* pIndex )
 	return MAX_AMMO_SLOTS;
 }
 
-BOOL CWeaponBox::PackAmmo( int iszName, int iCount )
+BOOL CWeaponBox::PackAmmo( string_t iszName, int iCount )
 {
 	if ( !iszName )
 	{
@@ -1726,3 +1726,5 @@ void CArmoury::ArmouryTouch( CBaseEntity* pOther )
 	if ( m_iCount == 0 )
 		pev->effects |= EF_NODRAW;
 }
+
+#include "generated_saved_callbacks/weapons.inc"

@@ -17,6 +17,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#if !defined(_WIN32)
+#include <new>
+#include <stdexcept>
+#endif
+
 #if defined( _WIN32 )
 #include <windows.h>
 #endif
@@ -34,6 +39,7 @@ public:
 	void CreateCmdLine( const char* commandline ) override;
 #if !defined( _WIN32 )
 	void CreateCmdLine( int argc, const char** argv ) override;
+    bool CreateLiteralCmdLine(const char* commandLine);
 #endif
 	const char* GetCmdLine() override;
 	char* CheckParm( const char* psz, char** ppszValue ) override;
@@ -64,31 +70,67 @@ CCommandLine::~CCommandLine()
 }
 
 #if !defined( _WIN32 )
-void CCommandLine::CreateCmdLine( int argc, const char** argv )
-{
-	char szFull[COMMAND_LINE_SIZE];
-	szFull[0] = '\0';
+bool CCommandLine::CreateLiteralCmdLine(const char* commandLine) {
+    if (!commandLine) {
+        return false;
+    }
+    const size_t bytes = strnlen(commandLine, COMMAND_LINE_SIZE);
+    if (bytes >= COMMAND_LINE_SIZE) {
+        return false;
+    }
+    char* replacement = new (std::nothrow) char[bytes + 1];
+    if (!replacement) {
+        return false;
+    }
+    memcpy(replacement, commandLine, bytes + 1);
+    delete[] m_pszCmdLine;
+    m_pszCmdLine = replacement;
+    return true;
+}
 
-	for ( int i = 0; i < argc; ++i )
-	{
-		if ( strchr( argv[i], ' ' ) )
-		{
-			strcat( szFull, "\"" );
-			strncat( szFull, argv[i], sizeof( szFull ) );
-			strcat( szFull, "\"" );
-		}
-		else
-		{
-			strncat( szFull, argv[i], sizeof( szFull ) );
-		}
+bool CreateNativeLiteralCommandLine(const char* commandLine) {
+    return g_CmdLine.CreateLiteralCmdLine(commandLine);
+}
 
-		strcat( szFull, " " );
-	}
+void CCommandLine::CreateCmdLine(int argc, const char** argv) {
+    constexpr size_t PayloadLimit = COMMAND_LINE_SIZE - 1;
+    constexpr size_t QuoteBytes = 2;
+    constexpr size_t SeparatorBytes = 1;
+    size_t encodedLength = 0;
 
-	if ( argc > 0 )
-		szFull[strlen( szFull ) - 1] = '\0';
+    // Validate the legacy encoding before replacing the current command line.
+    for (int index = 0; index < argc; ++index) {
+        const char* argument = argv[index];
+        const size_t argumentLength = strlen(argument);
+        const bool quoted = strchr(argument, ' ') != nullptr;
+        const size_t overhead = (index > 0 ? SeparatorBytes : 0) + (quoted ? QuoteBytes : 0);
+        if (overhead > PayloadLimit - encodedLength ||
+            argumentLength > PayloadLimit - encodedLength - overhead) {
+            throw std::length_error("Command line exceeds 4095 bytes");
+        }
+        encodedLength += overhead + argumentLength;
+    }
 
-	CreateCmdLine( szFull );
+    char commandLine[COMMAND_LINE_SIZE];
+    char* output = commandLine;
+    for (int index = 0; index < argc; ++index) {
+        const char* argument = argv[index];
+        const size_t argumentLength = strlen(argument);
+        const bool quoted = strchr(argument, ' ') != nullptr;
+        if (index > 0) {
+            *output++ = ' ';
+        }
+        if (quoted) {
+            *output++ = '"';
+        }
+        memcpy(output, argument, argumentLength);
+        output += argumentLength;
+        if (quoted) {
+            *output++ = '"';
+        }
+    }
+    *output = '\0';
+    CreateCmdLine(commandLine);
 }
 #endif
 
@@ -272,6 +314,64 @@ const char* CCommandLine::GetCmdLine()
 
 char* CCommandLine::CheckParm( const char* psz, char** ppszValue )
 {
+#if !defined(_WIN32)
+    // Match complete tokens and preserve quoted UTF-8 values. The Windows
+    // parser remains unchanged; native dedicated argv is validated upstream.
+    static char value[COMMAND_LINE_SIZE];
+    if (ppszValue) {
+        *ppszValue = nullptr;
+    }
+    if (!m_pszCmdLine || !psz) {
+        return nullptr;
+    }
+    char* cursor = m_pszCmdLine;
+    while (*cursor) {
+        while (*cursor && isspace(static_cast<unsigned char>(*cursor))) {
+            ++cursor;
+        }
+        char* token = cursor;
+        const bool quoted = *cursor == '"';
+        if (quoted) {
+            ++cursor;
+        }
+        char* begin = cursor;
+        while (*cursor && (quoted ? *cursor != '"' : !isspace(static_cast<unsigned char>(*cursor)))) {
+            ++cursor;
+        }
+        const size_t length = static_cast<size_t>(cursor - begin);
+        if (*cursor && quoted) {
+            ++cursor;
+        }
+        if (strlen(psz) != length || strncmp(begin, psz, length) != 0) {
+            continue;
+        }
+        if (!ppszValue) {
+            return token;
+        }
+        while (*cursor && isspace(static_cast<unsigned char>(*cursor))) {
+            ++cursor;
+        }
+        if (!*cursor) {
+            return token;
+        }
+        const bool valueQuoted = *cursor == '"';
+        if (valueQuoted) {
+            ++cursor;
+        }
+        size_t copied = 0;
+        while (*cursor && (valueQuoted ? *cursor != '"' : !isspace(static_cast<unsigned char>(*cursor)))) {
+            if (copied + 1 >= sizeof(value)) {
+                return token;
+            }
+            value[copied++] = *cursor++;
+        }
+        value[copied] = '\0';
+        *ppszValue = value;
+        return token;
+    }
+    return nullptr;
+#else
+
 	static char sz[MAX_PARAMETER_LEN];
 	if ( !m_pszCmdLine )
 		return NULL;
@@ -293,4 +393,5 @@ char* CCommandLine::CheckParm( const char* psz, char** ppszValue )
 	sz[i] = '\0';
 	*ppszValue = sz;
 	return pret;
+#endif
 }

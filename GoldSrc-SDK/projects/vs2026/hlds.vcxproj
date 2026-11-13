@@ -33,7 +33,11 @@
     <RunCodeAnalysis>true</RunCodeAnalysis>
     <CodeAnalysisSucceededFile>$(IntDir)$(TargetName).lastcodeanalysissucceeded</CodeAnalysisSucceededFile>
   </PropertyGroup>
-  <PropertyGroup><CseSdl3Shared>false</CseSdl3Shared></PropertyGroup>
+  <PropertyGroup>
+    <CseSdl3Shared>false</CseSdl3Shared>
+    <CseNativeSdl3>true</CseNativeSdl3>
+    <CseMacDedicatedResources>Admin.html;BanPanel.res;CreateMultiplayerGameServerPage.res;DialogAddBan.res;DialogCvarChange.res;DialogGamePanelInfo.res;GamePanelInfo.res;GraphPanel.res;MainServerConfig.vdf;MapCycleEditDialog.res;PlayerPanel.res;RawLogPanel.res;ServerConfigPanel.res;VarEditDialog_ComboBox.res;VarEditDialog_String.res;server_english.txt</CseMacDedicatedResources>
+  </PropertyGroup>
   <Import Project="SDL3.props" />
   <ItemDefinitionGroup>
     <ClCompile>
@@ -87,7 +91,57 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\common\legacy_wide_format.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>posix</CseTargetOS>
+      <ExceptionHandling>false</ExceptionHandling>
+      <FloatingPointModel>Precise</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\dedicated\sys_ded.cpp" />
+    <ClCompile Include="..\..\dedicated\native\main.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <CseReplaces>$(ProjectDir)..\..\dedicated\sys_ded.cpp</CseReplaces>
+    </ClCompile>
+    <ClCompile Include="..\..\dedicated\native\DedicatedSession.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="..\..\dedicated\native\DedicatedModuleSet.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="..\..\dedicated\native\NativeGui.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="..\..\dedicated\native\AdminFiles.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="..\..\dedicated\native\Signals.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="..\..\dedicated\native\TextConsolePosix.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <CseReplaces>$(ProjectDir)..\..\common\TextConsoleWin32.cpp</CseReplaces>
+    </ClCompile>
+    <ClCompile Include="..\..\launcher\native\MacRuntimeSession.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="..\..\launcher\native\SocketImageOwner.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <CsePointerWidth>64</CsePointerWidth>
+      <CseAppleMainImagePublisher>socket-v1</CseAppleMainImagePublisher>
+    </ClCompile>
+    <ClCompile Include="..\..\launcher\native\VGui1HostImageOwner.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
     <ClCompile Include="..\..\dedicated\CreateMultiplayerGameServerPage.cpp" />
     <ClCompile Include="..\..\dedicated\AdminServer.cpp" />
     <ClCompile Include="..\..\dedicated\console\conproc.cpp" />
@@ -142,12 +196,24 @@
     <ClCompile Include="..\..\vgui2\controls\ScrollBar.cpp" />
     <ClCompile Include="..\..\vgui2\controls\ScrollBarSlider.cpp" />
     <ClCompile Include="..\..\vgui2\controls\TextEntry.cpp" />
+    <ClCompile Include="..\..\common\TextEntryClipboard.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClInclude Include="..\..\common\TextEntryClipboard.h" />
     <ClCompile Include="..\..\vgui2\controls\TextImage.cpp" />
     <ClCompile Include="..\..\vgui2\controls\ToggleButton.cpp" />
     <ClCompile Include="..\..\vgui2\controls\Tooltip.cpp" />
     <ClCompile Include="..\..\vgui2\controls\URLLabel.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\public\cse_filesystem_abi.h" />
+    <ClInclude Include="..\..\public\cse_filesystem_methods.inc" />
+    <ClInclude Include="..\..\public\native_filesystem_module.h" />
+    <ClInclude Include="..\..\public\cse_module_abi.h" />
+    <ClInclude Include="..\..\public\html_legacy_interfaces.h" />
+    <ClInclude Include="..\..\public\html_key_codes.h" />
+    <ClInclude Include="..\..\public\html_key_modifiers.h" />
+    <ClInclude Include="..\..\public\native_module.h" />
     <ClInclude Include="..\..\dedicated\sys_ded.h" />
     <ClInclude Include="..\..\dedicated\CreateMultiplayerGameServerPage.h" />
     <ClInclude Include="..\..\dedicated\AdminServer.h" />

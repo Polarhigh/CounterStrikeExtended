@@ -3,6 +3,7 @@
 #include "filter.h"
 #include "isteamgameserver_c_api.h"
 #include "server.h"
+#include "world_leaf_index.h"
 #include "sv_main.h"
 #include "sound.h"
 #include "keys.h"
@@ -50,7 +51,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+
+namespace {
+#if defined(_WIN32)
+constexpr char kDuplicatePlayerNameFormat[] = "(%d)%-0.*s";
+#else
+constexpr char kDuplicatePlayerNameFormat[] = "(%d)%-.*s";
+#endif
+}
+#if defined(_WIN32)
 #include <malloc.h>
+#endif
 
 #if !defined( _WIN32 )
 #define _snprintf snprintf
@@ -138,13 +149,21 @@ UserMsg* sv_gpNewUserMsgs;
 UserMsg* sv_gpUserMsgs;
 static int giNextUserMsg = 64;
 
+static int SV_ModelLeafIndex(const mleaf_t* leaf) {
+    int index = 0;
+    if (!cse::bsp::CheckedWorldLeafIndex(leaf, sv.worldmodel->leafs, sv.worldmodel->numleafs, index)) {
+        Sys_Error("SV_ModelLeafIndex: invalid native leaf address");
+    }
+    return index;
+}
+
 int SV_PointLeafnum( vec_t* p )
 {
 	mleaf_t* leaf;
 
 	leaf = Mod_PointInLeaf( p, sv.worldmodel );
 	if ( leaf )
-		return leaf - sv.worldmodel->leafs;
+		return SV_ModelLeafIndex(leaf);
 
 	return 0;
 }
@@ -315,7 +334,7 @@ void SV_AddToFatPAS( vec_t* org, mnode_t* node )
 		{
 			if ( node->contents != CONTENTS_SOLID )
 			{
-				pas = CM_LeafPAS( (mleaf_t*)node - sv.worldmodel->leafs );
+				pas = CM_LeafPAS(SV_ModelLeafIndex(reinterpret_cast<mleaf_t*>(node)));
 				for ( i = 0; i < fatpasbytes; i++ )
 					fatpas[i] |= pas[i];
 			}
@@ -1806,7 +1825,12 @@ void SV_FullClientUpdate( client_t* client, sizebuf_t* sb )
 	Info_RemovePrefixedKeys( info, '_' );
 
 	MSG_WriteByte( sb, svc_updateuserinfo );
-	MSG_WriteByte( sb, client - svs.clients );
+    int clientIndex = 0;
+    if (svs.maxclients <= 0 || !cse::native::CheckedIndex(client, svs.clients,
+        static_cast<std::size_t>(svs.maxclients), clientIndex)) {
+        Sys_Error("SV_FullClientUpdate: invalid native client address");
+    }
+    MSG_WriteByte(sb, clientIndex);
 	MSG_WriteLong( sb, client->userid );
 	MSG_WriteString( sb, info );
 
@@ -2219,7 +2243,7 @@ void SV_WriteSpawn( sizebuf_t* message )
 		Q_memset( &sv_player->v, 0, sizeof( sv_player->v ) );
 		InitEntityDLLFields( sv_player );
 		sv_player->v.colormap = NUM_FOR_EDICT( sv_player );
-		sv_player->v.netname = static_cast<string_t>( host_client->name - pr_strings );
+		sv_player->v.netname = CseStringOffset(pr_strings, host_client->name);
 		if ( host_client->proxy )
 			sv_player->v.flags |= FL_PROXY;
 		gGlobalVariables.time = static_cast<float>( sv.time );
@@ -3106,7 +3130,7 @@ int SV_CreatePacketEntities( sv_delta_t type, client_t* client, packet_entities_
 			{
 				for ( int index = 0; index < sv.instance_baselines->number; ++index )
 				{
-					if ( static_cast<unsigned int>( sv.instance_baselines->classname[index] ) == entity->v.classname )
+					if ( sv.instance_baselines->classname[index] == entity->v.classname )
 					{
 						g_svdeltacallback.newbl = 1;
 						g_svdeltacallback.newblindex = index;
@@ -3541,7 +3565,7 @@ int SV_CheckUserInfo( netadr_t* address, char* userinfo, qboolean reconnecting, 
 					candidate += 4;
 			}
 			char duplicateName[MAX_PLAYERNAME];
-			_snprintf( duplicateName, sizeof( duplicateName ), "(%d)%-0.*s", duplicateNumber++,
+			_snprintf( duplicateName, sizeof( duplicateName ), kDuplicatePlayerNameFormat, duplicateNumber++,
 				CONNECTION_DUPLICATE_NAME_LENGTH, candidate );
 			Info_SetValueForKey( userinfo, "name", duplicateName, MAX_INFO_STRING );
 			changed = 1;
@@ -3865,7 +3889,7 @@ void SV_ExtractFromUserinfo( client_t* client )
 				else if ( name[3] == ')' )
 					name += 4;
 			}
-			_snprintf( newName, sizeof( newName ), "(%d)%-0.*s", duplicateCount++, DUPLICATE_NAME_BYTES, name );
+			_snprintf( newName, sizeof( newName ), kDuplicatePlayerNameFormat, duplicateCount++, DUPLICATE_NAME_BYTES, name );
 			Info_SetValueForKey( userinfo, "name", newName, USERINFO_BYTES );
 			name = Info_ValueForKey( userinfo, "name" );
 			index = 0;
@@ -5135,7 +5159,7 @@ int SV_SpawnServer( qboolean, char* mapName, char* startspot )
 	edict_t* world = &sv.edicts[0];
 	Q_memset( &world->v, 0, sizeof( world->v ) );
 	world->free = 0;
-	world->v.model = static_cast<string_t>( sv.worldmodel->name - pr_strings );
+	world->v.model = CseStringOffset(pr_strings, sv.worldmodel->name);
 	world->v.modelindex = 1; // world model
 	world->v.solid = SOLID_BSP;
 	world->v.movetype = MOVETYPE_PUSH;
@@ -5143,8 +5167,8 @@ int SV_SpawnServer( qboolean, char* mapName, char* startspot )
 		gGlobalVariables.deathmatch = deathmatch.value;
 	else
 		gGlobalVariables.coop = coop.value;
-	gGlobalVariables.mapname = static_cast<string_t>( sv.name - pr_strings );
-	gGlobalVariables.startspot = static_cast<string_t>( sv.startspot - pr_strings );
+	gGlobalVariables.mapname = CseStringOffset(pr_strings, sv.name);
+	gGlobalVariables.startspot = CseStringOffset(pr_strings, sv.startspot);
 	gGlobalVariables.serverflags = static_cast<float>( svs.serverflags );
 	const char* allowValue = "1";
 	if ( deathmatch.value != 0.0f )
@@ -6396,7 +6420,7 @@ int SV_CheckForDuplicateNames( char* userinfo, qboolean reconnecting, int exclud
 					candidate += 4;
 			}
 			char duplicateName[MAX_PLAYERNAME];
-			_snprintf( duplicateName, sizeof( duplicateName ), "(%d)%-0.*s", duplicateNumber,
+			_snprintf( duplicateName, sizeof( duplicateName ), kDuplicatePlayerNameFormat, duplicateNumber,
 				DUPLICATE_NAME_PRECISION, candidate );
 			++duplicateNumber;
 			Info_SetValueForKey( userinfo, "name", duplicateName, MAX_INFO_STRING );

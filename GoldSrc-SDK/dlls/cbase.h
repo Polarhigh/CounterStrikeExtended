@@ -55,6 +55,9 @@ CBaseEntity
 #ifndef CBASE_DLLEXPORT
 #ifdef _WIN32
 #define CBASE_DLLEXPORT _declspec( dllexport )
+#elif defined(__APPLE__)
+// Match dllexport's retention of explicitly exported inline callbacks.
+#define CBASE_DLLEXPORT __attribute__((visibility("default"), used))
 #else
 #define CBASE_DLLEXPORT __attribute__ ((visibility("default")))
 #endif
@@ -91,6 +94,15 @@ extern void FireTargets( const char *targetName, CBaseEntity *pActivator, CBaseE
 typedef void (CBaseEntity::*BASEPTR)(void);
 typedef void (CBaseEntity::*ENTITYFUNCPTR)(CBaseEntity *pOther );
 typedef void (CBaseEntity::*USEPTR)( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
+
+template<typename> struct CseSavedCallbackAccess;
+#ifndef CLIENT_DLL
+void CseCheckThink(BASEPTR value, const char *name, const char *entity);
+void CseCheckTouch(ENTITYFUNCPTR value, const char *name, const char *entity);
+void CseCheckUse(USEPTR value, const char *name, const char *entity);
+void CseCheckBlocked(ENTITYFUNCPTR value, const char *name, const char *entity);
+#endif
+
 
 // For CLASSIFY
 #define	CLASS_NONE				0
@@ -129,7 +141,7 @@ private:
 	edict_t *m_pent;
 	int		m_serialnumber;
 public:
-	edict_t *Get( void );
+	edict_t *Get( void ) const;
 	edict_t *Set( edict_t *pent );
 
 	operator int ();
@@ -154,6 +166,10 @@ public:
 	// path corners
 	CBaseEntity			*m_pGoalEnt;// path corner we are heading towards
 	CBaseEntity			*m_pLink;// used for temporary link-list operations. 
+
+    // Worldspawn-only state stays in BASE's optional named fields for legacy save envelopes.
+    string_t m_worldMapTeams = 0;
+    bool m_worldMapTeamsKnown = false;
 
 	// initialization functions
 	virtual void	Spawn( void ) { return; }
@@ -230,10 +246,9 @@ public:
 	virtual void Blocked( CBaseEntity *pOther ) { if (m_pfnBlocked) (this->*m_pfnBlocked)( pOther ); };
 
 	// allow engine to allocate instance data
-    void *operator new( size_t stAllocateBlock, entvars_t *pev )
-	{
-		return (void *)ALLOC_PRIVATE(ENT(pev), stAllocateBlock);
-	};
+    void *operator new(size_t bytes, entvars_t *variables) {
+        return ALLOC_PRIVATE(ENT(variables), bytes);
+    }
 
 	// don't use this.
 #if _MSC_VER >= 1200 // only build this code if MSVC++ 6.0 or higher
@@ -267,13 +282,15 @@ public:
 	static CBaseEntity *Instance( edict_t *pent )
 	{ 
 		if ( !pent )
-			pent = ENT(0);
+			pent = ENT(eoNullEntity);
 		CBaseEntity *pEnt = (CBaseEntity *)GET_PRIVATE(pent); 
 		return pEnt; 
 	}
 
 	static CBaseEntity *Instance( entvars_t *pev ) { return Instance( ENT( pev ) ); }
-	static CBaseEntity *Instance( int eoffset) { return Instance( ENT( eoffset) ); }
+    static CBaseEntity *Instance(EOFFSET offset) {
+        return Instance(ENT(offset));
+    }
 
 	CBaseMonster *GetMonsterPointer( entvars_t *pevMonster ) 
 	{ 
@@ -291,38 +308,40 @@ public:
 	}
 
 
-	// Ugly code to lookup all functions to make sure they are exported when set.
+    // Validate typed assignments against the eager save catalog in Debug.
 #ifdef _DEBUG
-	void FunctionCheck( void *pFunction, char *name ) 
-	{ 
-		if (pFunction && !NAME_FOR_FUNCTION((uint32)pFunction) )
-			ALERT( at_error, "No EXPORT: %s:%s (%08lx)\n", STRING(pev->classname), name, (uint32)pFunction );
-	}
 
-	BASEPTR	ThinkSet( BASEPTR func, char *name ) 
-	{ 
-		m_pfnThink = func; 
-		FunctionCheck( (void *)*((int *)((char *)this + ( offsetof(CBaseEntity,m_pfnThink)))), name ); 
-		return func;
-	}
-	ENTITYFUNCPTR TouchSet( ENTITYFUNCPTR func, char *name ) 
-	{ 
-		m_pfnTouch = func; 
-		FunctionCheck( (void *)*((int *)((char *)this + ( offsetof(CBaseEntity,m_pfnTouch)))), name ); 
-		return func;
-	}
-	USEPTR	UseSet( USEPTR func, char *name ) 
-	{ 
-		m_pfnUse = func; 
-		FunctionCheck( (void *)*((int *)((char *)this + ( offsetof(CBaseEntity,m_pfnUse)))), name ); 
-		return func;
-	}
-	ENTITYFUNCPTR	BlockedSet( ENTITYFUNCPTR func, char *name ) 
-	{ 
-		m_pfnBlocked = func; 
-		FunctionCheck( (void *)*((int *)((char *)this + ( offsetof(CBaseEntity,m_pfnBlocked)))), name ); 
-		return func;
-	}
+    BASEPTR ThinkSet(BASEPTR func, const char *name) {
+        m_pfnThink = func;
+#ifndef CLIENT_DLL
+        CseCheckThink(func, name, STRING(pev->classname));
+#endif
+        return func;
+    }
+
+    ENTITYFUNCPTR TouchSet(ENTITYFUNCPTR func, const char *name) {
+        m_pfnTouch = func;
+#ifndef CLIENT_DLL
+        CseCheckTouch(func, name, STRING(pev->classname));
+#endif
+        return func;
+    }
+
+    USEPTR UseSet(USEPTR func, const char *name) {
+        m_pfnUse = func;
+#ifndef CLIENT_DLL
+        CseCheckUse(func, name, STRING(pev->classname));
+#endif
+        return func;
+    }
+
+    ENTITYFUNCPTR BlockedSet(ENTITYFUNCPTR func, const char *name) {
+        m_pfnBlocked = func;
+#ifndef CLIENT_DLL
+        CseCheckBlocked(func, name, STRING(pev->classname));
+#endif
+        return func;
+    }
 
 #endif
 
@@ -464,7 +483,7 @@ class CBaseDelay : public CBaseEntity
 {
 public:
 	float		m_flDelay;
-	int			m_iszKillTarget;
+	string_t			m_iszKillTarget;
 
 	virtual void	KeyValue( KeyValueData* pkvd);
 	virtual int		Save( CSave &save );
@@ -840,4 +859,14 @@ public:
 	void Spawn( void );
 	void Precache( void );
 	void KeyValue( KeyValueData *pkvd );
+    string_t MapTeamList() const {
+        return m_worldMapTeams;
+    }
+    void EnsureMapTeamList() {
+        if (!m_worldMapTeamsKnown) {
+            // Legacy raw team offsets cannot be dereferenced in a new process.
+            m_worldMapTeams = g_engfuncs.pfnGetWorldspawnString("mapteams");
+            m_worldMapTeamsKnown = true;
+        }
+    }
 };

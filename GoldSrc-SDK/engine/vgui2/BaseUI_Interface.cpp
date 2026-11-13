@@ -1,10 +1,16 @@
+#include "../../public/native_system_module_abi.h"
 #include "BaseUI_Interface.h"
+#include "../native_gameui_retirement.h"
+#include "../../public/runtime_module_names.h"
 #include "EnginePanel.h"
 #include "BaseUISurface.h"
 #include "../common.h"
+#include "../conprint.h"
+#include "../sys.h"
 #include "../controls.h"
 #include "../filesystem.h"
 #include "../interface.h"
+#include "../blob.h"
 #include "../keys.h"
 #include "../SystemWrapper.h"
 #include "../utlvector.h"
@@ -19,6 +25,10 @@
 #include <cstdio>
 #include <cstring>
 
+#if INTPTR_MAX > INT32_MAX
+#include "../html/native/controller_factory.h"
+#endif
+
 #if defined( _WIN32 )
 #include <Windows.h>
 #endif
@@ -29,7 +39,7 @@
 #endif
 
 extern vgui2::IInputInternal* g_InputInternal;
-extern HINSTANCE hClientDLL;
+extern HMODULE hClientDLL;
 extern qboolean g_bIsDedicatedServer;
 extern CUtlVector<char*> g_fallbackLocalizationFiles;
 
@@ -82,6 +92,9 @@ CBaseUI::CBaseUI()
 	m_hStaticGameUIModule = nullptr;
 	m_bConsoleShowing = false;
 	m_bHidingGameUI = false;
+#if INTPTR_MAX > INT32_MAX
+    m_hChromeModule = nullptr;
+#endif
 }
 
 CBaseUI::~CBaseUI()
@@ -226,20 +239,50 @@ void CBaseUI::Initialize( CreateInterfaceFn* factories, int )
 	fileSystemFactory( "VFileSystem009", nullptr );
 	m_hVGuiModule = Sys_LoadModule( "vgui2.dll" );
 	CreateInterfaceFn vguiFactory = Sys_GetFactory( m_hVGuiModule );
+#if defined(__APPLE__) && defined(SW_RENDERER)
+    m_nativeCompletion = cse::vgui_completion::Admit(m_hVGuiModule, reinterpret_cast<const void*>(vguiFactory));
+    if (!m_nativeCompletion) {
+        Sys_Error("VGUI has an incompatible private client completion contract");
+        return;
+    }
+#endif
+#if INTPTR_MAX > INT32_MAX
+    std::string browserError;
+    m_nativeChromeController = cse::browser::CreateEngineController(browserError);
+    if (!m_nativeChromeController) {
+        Con_Printf("Native HTML browser unavailable: %s\n", browserError.c_str());
+    }
+    // The native controller is owned locally; this slot is the legacy vendor ABI factory only.
+    m_FactoryList[3] = nullptr;
+#else
 	m_hChromeModule = Sys_LoadModule( "chromehtml.dll" );
 	m_FactoryList[3] = Sys_GetFactory( m_hChromeModule );
+#endif
 	m_FactoryList[0] = engineFactory;
 	m_FactoryList[1] = vguiFactory;
 	m_FactoryList[2] = fileSystemFactory;
 	m_iNumFactories = 4;
 
 	char filename[512];
-	_snprintf( filename, sizeof( filename ), "cl_dlls\\GameUI.dll" );
+    _snprintf(filename, sizeof(filename), "%s", cse::runtime_modules::GameUI);
 	COM_ExpandFilename( filename );
 	COM_FixSlashes( filename );
 	FS_GetLocalCopy( filename );
 	m_hStaticGameUIModule = Sys_LoadModule( filename );
 	CreateInterfaceFn gameUIFactory = Sys_GetFactory( m_hStaticGameUIModule );
+#if INTPTR_MAX > INT32_MAX
+    m_nativeRetirement = cse::gameui_lifetime::AdmitRetirement(gameUIFactory);
+    if (!m_nativeRetirement) {
+        Sys_Error("GameUI has an incompatible private retirement contract");
+        return;
+    }
+#endif
+#if CSE_NATIVE_SYSTEM_MODULE
+    if (!cse::modules::AdmitConsumer(gameUIFactory)) {
+        Sys_Error("GameUI has an incompatible native system-module consumer contract");
+        return;
+    }
+#endif
 	m_FactoryList[m_iNumFactories] = gameUIFactory;
 	if ( gameUIFactory )
 	{
@@ -269,6 +312,9 @@ void CBaseUI::Initialize( CreateInterfaceFn* factories, int )
 		m_FactoryList[m_iNumFactories] = nullptr;
 	}
 	vgui2::VGuiControls_Init( "BaseUI", m_FactoryList, m_iNumFactories );
+#if INTPTR_MAX > INT32_MAX
+    m_nativeControlsInitialized = true;
+#endif
 }
 
 CBaseUI* BaseUI()
@@ -353,11 +399,102 @@ vgui2::VPANEL CEnginePanel::IsWithinTraverse( int x, int y, bool traversePopups 
 
 void CBaseUI::Shutdown()
 {
+    TryShutdown();
+}
+
+bool CBaseUI::TryRetireGameUI() {
+#if INTPTR_MAX > INT32_MAX
+    if (!m_nativeGameUIInitialized) {
+        return true;
+    }
+    if (m_nativeRetirementBusy || !m_nativeRetirement || !cse::NativeGameUIIsRetirementSafePoint()) {
+        return false;
+    }
+    m_nativeRetirementBusy = true;
+    const bool retired = m_nativeRetirement->TryRetire();
+    if (!retired && m_nativeControlsInitialized) {
+        // One bounded lifecycle turn, while every widget/provider/image dependency remains live.
+        vgui2::ivgui()->RunFrame();
+    }
+    m_nativeRetirementBusy = false;
+    return retired && m_nativeRetirement->IsRetired();
+#else
+    return true;
+#endif
+}
+
+bool cse::TryRetireNativeGameUI() {
+    return g_BaseUI.TryRetireGameUI();
+}
+
+bool cse::TryShutdownNativeBaseUI() {
+    return g_BaseUI.TryShutdown();
+}
+
+bool CBaseUI::TryShutdown() {
+#if INTPTR_MAX > INT32_MAX
+    if (m_nativeShutdownBusy || !TryRetireGameUI()) {
+        return false;
+    }
+    if (!m_hVGuiModule && !m_hStaticGameUIModule && !m_nativeChromeController) {
+        return true;
+    }
+    m_nativeShutdownBusy = true;
+    struct ShutdownGuard {
+        bool& busy;
+        ~ShutdownGuard() {
+            busy = false;
+        }
+    } shutdownGuard{m_nativeShutdownBusy};
+    if (staticGameUIFuncs && m_nativeGameUIInitialized) {
+        staticGameUIFuncs->Shutdown();
+        m_nativeGameUIInitialized = false;
+    }
+#else
 	vgui2::ivgui()->RunFrame();
 	staticGameUIFuncs->Shutdown();
+#endif
 
+#if INTPTR_MAX > INT32_MAX
+    if (m_nativeClientInitialized && !m_nativeClientShutdown) {
+        m_nativeClientShutdown = true;
+        if (staticClient) {
+            staticClient->Shutdown();
+        }
+    }
+    if (staticPanel && !m_nativeRootDeletionQueued) {
+        m_nativeRoot = staticPanel;
+        staticPanel->SetVisible(false);
+        if (staticSurface) {
+            // CVGui runs SolveTraverse after dispatching Delete in this same lifecycle turn.
+            staticSurface->SetEmbeddedPanel(0);
+        }
+        staticPanel->MarkForDeletion();
+        m_nativeRootDeletionQueued = true;
+        return false;
+    }
+    if (m_nativeRoot.Get()) {
+        if (m_nativeControlsInitialized) {
+            vgui2::ivgui()->RunFrame();
+        }
+        return false;
+    }
+    m_nativeRoot = nullptr;
+    staticPanel = nullptr;
+    staticClientDLLPanel = nullptr;
+    staticGameUIPanel = nullptr;
+    staticClient = nullptr;
+    m_nativeClientInitialized = false;
+    m_nativeRootDeletionQueued = false;
+    m_bConsoleShowing = false;
+    mousecontrol = nullptr;
+    if (staticSurface) {
+        staticSurface->SetEmbeddedPanel(0);
+    }
+#else
 	char gameDir[32];
-	std::strncpy( gameDir, gEngfuncs.pfnGetGameDirectory(), 31 );
+    const char* currentGame = gEngfuncs.pfnGetGameDirectory ? gEngfuncs.pfnGetGameDirectory() : "";
+	std::strncpy( gameDir, currentGame, 31 );
 	gameDir[31] = 0;
 	if ( staticClient != nullptr
 		 && ( Q_strcasecmp( gameDir, "cstrike" ) == 0 || Q_strcasecmp( gameDir, "czero" ) == 0 ) )
@@ -365,24 +502,94 @@ void CBaseUI::Shutdown()
 		staticClient->Shutdown();
 	}
 
+#endif
+
+#if INTPTR_MAX > INT32_MAX
+    if (m_nativeChromeController) {
+        cse::browser::BeginControllerShutdown(*m_nativeChromeController);
+#if defined(__APPLE__) && defined(SW_RENDERER)
+        m_nativeChromeController->Shutdown();
+        if (!cse::browser::ControllerQuiescent(*m_nativeChromeController)) {
+            return false;
+        }
+#endif
+    }
+#if defined(__APPLE__) && defined(SW_RENDERER)
+    if (m_hVGuiModule) {
+        if (!m_nativeCompletion) {
+            return false;
+        }
+        if (m_nativeControlsInitialized) {
+            vgui2::system()->SaveUserConfigFile();
+        }
+        const void* selectedSurface = m_nativeControlsInitialized ? vgui2::surface() : nullptr;
+        const auto result = m_nativeCompletion->finish(selectedSurface);
+        if (result != cse::vgui_completion::Result::Complete) {
+            if (result == cse::vgui_completion::Result::Busy && m_nativeControlsInitialized) {
+                // Give already-owned serial deletion/messages one bounded lifecycle turn.
+                vgui2::ivgui()->RunFrame();
+            }
+            return false;
+        }
+    }
+#endif
+    // Every widget owner has now been observed deleted with its code and services alive.
+    if (staticSurface != nullptr) {
+        staticSurface->Shutdown();
+    }
+    m_nativeChromeController.reset();
+#endif
+
 	Sys_UnloadModule( m_hStaticGameUIModule );
 	m_hStaticGameUIModule = nullptr;
 	staticCareerUI = nullptr;
 	staticGameConsole = nullptr;
 	staticGameUIFuncs = nullptr;
+#if INTPTR_MAX > INT32_MAX
+    m_nativeRetirement = nullptr;
+#if !defined(__APPLE__) || !defined(SW_RENDERER)
+    if (m_nativeControlsInitialized) {
+        vgui2::system()->SaveUserConfigFile();
+    }
+#else
+    vgui2::VGuiControls_Shutdown();
+    g_InputInternal = nullptr;
+    for (auto& factory : m_FactoryList) {
+        factory = nullptr;
+    }
+    m_iNumFactories = 0;
+    gEngfuncs = {};
+    m_nativeCompletion = nullptr;
+#endif
+    m_nativeControlsInitialized = false;
+#else
 	vgui2::system()->SaveUserConfigFile();
+#endif
 	Sys_UnloadModule( m_hVGuiModule );
 	m_hVGuiModule = nullptr;
+#if INTPTR_MAX <= INT32_MAX
 	staticSurface->Shutdown();
+#else
+    staticSurface = nullptr;
+#endif
 	if ( m_hChromeModule != nullptr )
 	{
 		Sys_UnloadModule( m_hChromeModule );
 		m_hChromeModule = nullptr;
 	}
+#if INTPTR_MAX > INT32_MAX
+    m_nativeShutdownBusy = false;
+#endif
+    return true;
 }
 
 void CBaseUI::Start( cl_enginefuncs_s* engineFuncs, int )
 {
+#if INTPTR_MAX > INT32_MAX
+    if (!m_nativeControlsInitialized || !m_nativeRetirement) {
+        return;
+    }
+#endif
 	std::memcpy( &gEngfuncs, engineFuncs, sizeof( gEngfuncs ) );
 
 	staticPanel = new CStaticPanel( nullptr, "StaticPanel" );
@@ -396,8 +603,12 @@ void CBaseUI::Start( cl_enginefuncs_s* engineFuncs, int )
 
 	staticSurface = static_cast<BaseUISurface*>( m_FactoryList[0]( "VGUI_Surface026", nullptr ) );
 	vgui2::g_pSurface = staticSurface;
+#if INTPTR_MAX > INT32_MAX
+    IHTMLChromeController* chromeController = m_nativeChromeController.get();
+#else
 	IHTMLChromeController* chromeController =
 		static_cast<IHTMLChromeController*>( m_FactoryList[3]( "ChromeHTML_Controller_001", nullptr ) );
+#endif
 	IEngineSurface* engineSurface = static_cast<IEngineSurface*>( m_FactoryList[0]( "EngineSurface007", nullptr ) );
 	staticSurface->Init( staticPanel->GetVPanel(), engineSurface, chromeController );
 	mousecontrol = staticSurface;
@@ -452,10 +663,19 @@ void CBaseUI::Start( cl_enginefuncs_s* engineFuncs, int )
 	staticGameUIPanel->SetCursor( static_cast<vgui2::HCursor>( vgui2::dc_none ) );
 	staticGameUIPanel->SetZPos( 50 );
 
-	if ( staticGameUIFuncs != nullptr )
-		staticGameUIFuncs->Initialize( m_FactoryList, m_iNumFactories );
+    if (staticGameUIFuncs != nullptr) {
+#if INTPTR_MAX > INT32_MAX
+        // Record entry before calling into the owner so partial initialization remains owned.
+        m_nativeGameUIInitialized = true;
+#endif
+        staticGameUIFuncs->Initialize(m_FactoryList, m_iNumFactories);
+    }
 	if ( staticClient != nullptr )
 	{
+#if INTPTR_MAX > INT32_MAX
+        m_nativeClientInitialized = true;
+        m_nativeClientShutdown = false;
+#endif
 		staticClient->Initialize( m_FactoryList, m_iNumFactories );
 		staticSurface->SetVGUI2MouseControl( true );
 	}
@@ -479,7 +699,7 @@ void CBaseUI::Start( cl_enginefuncs_s* engineFuncs, int )
 
 	staticGameConsole->Initialize();
 	if ( staticGameConsole != nullptr )
-		staticGameConsole->SetParent( static_cast<int>( staticGameUIPanel->GetVPanel() ) );
+		staticGameConsole->SetParent( staticGameUIPanel->GetVPanel() );
 
 	staticSurface->m_bIgnoreMouseVisCalc = false;
 	staticGameUIFuncs->ActivateGameUI();

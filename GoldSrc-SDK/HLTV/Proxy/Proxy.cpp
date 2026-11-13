@@ -1,3 +1,6 @@
+#if !defined(_WIN32)
+#include "../../common/legacy_str_to_integer.h"
+#endif
 #include "Proxy.h"
 
 #include "ProxyClient.h"
@@ -248,7 +251,12 @@ void Proxy::DisconnectClients( char* reason )
 
 void Proxy::StopBroadcast( char* message )
 {
+#if defined(_WIN32)
 	DisconnectClients( message ? COM_VarArgs( "%s\n", message ) : "HLTV stopped.\n" );
+#else
+    static char stoppedMessage[] = "HLTV stopped.\n";
+    DisconnectClients(message ? COM_VarArgs("%s\n", message) : stoppedMessage);
+#endif
 	m_Server->Disconnect();
 	m_Server->StopRetry();
 	m_World->StopGame();
@@ -260,10 +268,39 @@ void Proxy::ShutDown()
 {
 	if ( m_State == MODULE_DISCONNECTED )
 		return;
+#if CSE_NATIVE_SYSTEM_MODULE
+    if (m_NativeShuttingDown) {
+        return;
+    }
+    m_NativeShuttingDown = true;
+    if (m_Network) {
+        m_Network->RemoveListener(this);
+    }
+    if (m_Server) {
+        m_Server->RemoveListener(this);
+        m_Server->SetProxy(nullptr);
+        m_Server->SetDirector(nullptr);
+    }
+    if (m_World) {
+        m_World->RemoveListener(this);
+    }
+    if (m_State == MODULE_RUNNING) {
+        StopBroadcast(const_cast<char*>("HLTV Shutdown."));
+    }
+    // DisconnectClients only transmits a notice; registered channel owners must
+    // finish their real cleanup before Network can close and delete the sockets.
+    while (auto *client = static_cast<IClient *>(m_Clients.RemoveHead())) {
+        m_System->RemoveModule(client);
+    }
+    m_System->RemoveModule(&m_Master);
+    m_System->RemoveModule(&m_Status);
+    m_System->RemoveModule(&m_DemoClient);
+#else
 	StopBroadcast( "HLTV Shutdown." );
 	m_Master.ShutDown();
 	m_Status.ShutDown();
 	m_DemoClient.ShutDown();
+#endif
 	if ( m_Director )
 		m_Director->ShutDown();
 	if ( m_World )
@@ -280,6 +317,13 @@ void Proxy::ShutDown()
 	m_InfoInfo.Free();
 	m_InfoString.Free();
 	ClearResources();
+#if CSE_NATIVE_SYSTEM_MODULE
+    m_Server = nullptr;
+    m_World = nullptr;
+    m_Network = nullptr;
+    m_Director = nullptr;
+    m_Socket = nullptr;
+#endif
 	BaseSystemModule::ShutDown();
 	m_System->Printf( "Proxy module shutdown.\n" );
 }
@@ -391,7 +435,12 @@ bool Proxy::CheckDirectorModule()
 	sprintf( filename, "%s/dlls/director", m_World->GetGameDir() );
 	if ( m_Director )
 		m_System->RemoveModule( m_Director );
+
+#if CSE_NATIVE_SYSTEM_MODULE
+    m_Director = cse::modules::Acquire<IDirector>(m_System, "director001", filename, "director");
+#else
 	m_Director = dynamic_cast<IDirector*>( m_System->GetModule( "director001", filename, "director" ) );
+#endif
 	if ( m_Director )
 	{
 		m_System->DPrintf( "Using extern director module (%s).\n", filename );
@@ -467,9 +516,20 @@ void Proxy::NewGameStarted()
 
 void Proxy::ReceiveSignal( ISystemModule* module, unsigned int signal, void* )
 {
+#if CSE_NATIVE_SYSTEM_MODULE
+    if (m_NativeShuttingDown || m_State == MODULE_DISCONNECTED) {
+        return;
+    }
+    if (m_Network && module == static_cast<ISystemModule *>(m_Network) &&
+        signal == cse::modules::NetworkShutdownSignal) {
+        ShutDown();
+        return;
+    }
+    if (m_Server && module == static_cast<ISystemModule *>(m_Server)) {
+#else
 	int serial = module->GetSerial();
-	if ( serial == m_Server->GetSerial() )
-	{
+	if ( serial == m_Server->GetSerial() ) {
+#endif
 		switch ( signal )
 		{
 		case 4: NewServerConnection(); break;
@@ -478,8 +538,11 @@ void Proxy::ReceiveSignal( ISystemModule* module, unsigned int signal, void* )
 		case 7: BroadcastRetryMessage(); break;
 		}
 	}
-	else if ( serial == m_World->GetSerial() )
-	{
+#if CSE_NATIVE_SYSTEM_MODULE
+    else if (m_World && module == static_cast<ISystemModule *>(m_World)) {
+#else
+	else if ( serial == m_World->GetSerial() ) {
+#endif
 		switch ( signal )
 		{
 		case 2:
@@ -1519,7 +1582,12 @@ void Proxy::CMD_StopRecording( char* )
 void Proxy::CMD_Stop( char* cmdLine )
 {
 	TokenLine params( cmdLine );
+#if defined(_WIN32)
 	StopBroadcast( params.CountToken() <= 1 ? "HLTV stopped." : params.GetRestOfLine( 1 ) );
+#else
+    static char stoppedMessage[] = "HLTV stopped.";
+    StopBroadcast(params.CountToken() <= 1 ? stoppedMessage : params.GetRestOfLine(1));
+#endif
 	m_System->DPrintf( "Disconnected and stoppted.\n" );
 }
 
@@ -1655,7 +1723,13 @@ void Proxy::ReplyConnect( NetAddress* to, int protocol, int challenge, char*, ch
 	{
 		if ( m_Clients.CountElements() >= maxclients )
 		{
+#if defined(_WIN32)
 			RejectConnection( to, false, maxclients ? "HLTV proxy is full.\n" : "HLTV proxy is disabled.\n" );
+#else
+            static char fullMessage[] = "HLTV proxy is full.\n";
+            static char disabledMessage[] = "HLTV proxy is disabled.\n";
+            RejectConnection(to, false, maxclients ? fullMessage : disabledMessage);
+#endif
 			return;
 		}
 		ProxyClient* proxyClient = new ProxyClient( this );
@@ -1725,7 +1799,11 @@ bool Proxy::ProcessConnectionlessMessage( NetAddress* from, BitBuffer* stream )
 		else if ( count == 3 )
 		{
 			if ( type && type[0] && !strcasecmp( type, "rcon" ) )
+#if defined(_WIN32)
 				SendRcon( from, strtoul( command.GetToken( 2 ), NULL, 10 ) );
+#else
+                SendRcon(from, CseLegacyStrtoul10(command.GetToken(2), nullptr));
+#endif
 			else
 			{
 				m_System->Printf( "Invalid challenge type (%s) from: %s\n", type ? type : "NULL", from->ToString() );
@@ -1743,7 +1821,11 @@ bool Proxy::ProcessConnectionlessMessage( NetAddress* from, BitBuffer* stream )
 	{
 		if ( count <= 3 )
 			return false;
+#if defined(_WIN32)
 		unsigned int challenge = strtoul( command.GetToken( 1 ), NULL, 10 );
+#else
+        unsigned int challenge = CseLegacyStrtoul10(command.GetToken(1), nullptr);
+#endif
 		char* password = command.GetToken( 2 );
 		char* text = command.GetRestOfLine( 3 );
 		if ( !CheckChallenge( from, challenge ) )
@@ -1988,6 +2070,13 @@ void Proxy::UpdateInfoMessages()
 
 bool Proxy::Init( IBaseSystem* system, int serial, char* name )
 {
+#if CSE_NATIVE_SYSTEM_MODULE
+    m_Server = nullptr;
+    m_World = nullptr;
+    m_Network = nullptr;
+    m_Director = nullptr;
+    m_Socket = nullptr;
+#endif
 	BaseSystemModule::Init( system, serial, name );
 	if ( name )
 	{
@@ -2047,12 +2136,22 @@ bool Proxy::Init( IBaseSystem* system, int serial, char* name )
 	m_System->RegisterCommand( "clearbanns", this, CMD_ID_CLEARBANNS );
 	m_System->RegisterCommand( "maxloss", this, CMD_ID_MAXLOSS );
 	m_System->RegisterCommand( "region", this, CMD_ID_REGION );
+
+#if CSE_NATIVE_SYSTEM_MODULE
+    m_Network = cse::modules::Acquire<INetwork>(m_System, "network001", "core", NULL);
+#else
 	m_Network = (INetwork*)m_System->GetModule( "network001", "core", NULL );
+#endif
 	if ( !m_Network )
 	{
 		m_System->Errorf( "Proxy::Init: couldn't load network module.\n" );
 		return false;
 	}
+#if CSE_NATIVE_SYSTEM_MODULE
+    if (!cse::modules::Subscribe(m_Network, this)) {
+        return false;
+    }
+#endif
 	char* portString = m_System->CheckParam( "-port" );
 	int port = atoi( portString ? portString : "27020" );
 	m_Socket = m_Network->CreateSocket( port, false, false );
@@ -2073,7 +2172,12 @@ bool Proxy::Init( IBaseSystem* system, int serial, char* name )
 		m_System->Errorf( "Proxy::Init: add master module.\n" );
 		return false;
 	}
+
+#if CSE_NATIVE_SYSTEM_MODULE
+    m_Server = cse::modules::Acquire<IServer>(m_System, "server001", "core", NULL);
+#else
 	m_Server = (IServer*)m_System->GetModule( "server001", "core", NULL );
+#endif
 	if ( !m_Server )
 	{
 		m_System->Errorf( "Proxy::Init: couldn't load server module.\n" );
@@ -2084,7 +2188,12 @@ bool Proxy::Init( IBaseSystem* system, int serial, char* name )
 	m_Server->SetUserInfo( "hspecs", "0" );
 	m_Server->SetUserInfo( "hslots", "0" );
 	m_Server->SetGameDirectory( "valve", NULL );
+
+#if CSE_NATIVE_SYSTEM_MODULE
+    m_World = cse::modules::Acquire<IWorld>(m_System, "world001", "core", NULL);
+#else
 	m_World = (IWorld*)m_System->GetModule( "world001", "core", NULL );
+#endif
 	if ( !m_World )
 	{
 		m_System->Errorf( "Proxy::Init: couldn't load world module.\n" );

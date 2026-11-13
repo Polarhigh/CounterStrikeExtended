@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.25)
+project(CseCefHostFixtures LANGUAGES C CXX)
+get_filename_component(CSE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+include("${CSE_ROOT}/cmake/TargetPlatform.cmake")
+add_subdirectory("${CSE_ROOT}/cmake/browser_host" "${CMAKE_CURRENT_BINARY_DIR}/host")

@@ -1,19 +1,21 @@
 # Project scope
 
-CounterStrikeExtended retains Counter-Strike 1.6, Half-Life, the shared runtime
-and dedicated-server support. The supported build configuration is Windows x86.
+CounterStrikeExtended retains Counter-Strike 1.6, Half-Life, the shared runtime,
+dedicated servers and HLTV. Runtime builds target Windows x86, Windows x64 and
+macOS Apple Silicon; Windows x86 is the default preset.
 Of the original 57 non-external MSBuild projects, 19 remain and are enabled by
 default; 38 have been removed. Broadcasting, A3D and dedicated servers can be
 disabled for reduced builds.
 
-Paths below are relative to `GoldSrc-SDK/`, except runtime outputs, which are
-relative to repository-root `output/` for Release CMake builds (`output-debug/`
-for Debug). Legacy MSBuild outputs use `GoldSrc-SDK/bin/Win32/<Configuration>/`.
-See [building.md](building.md) for commands, output separation and feature options.
+Source paths below are relative to `GoldSrc-SDK/`. The table shows Windows
+runtime paths relative to the selected output root; macOS uses native executable
+and library names in the same game directories. Legacy MSBuild outputs use
+`GoldSrc-SDK/bin/Win32/<Configuration>/`. See [building.md](building.md) for
+commands, output roots and feature options.
 
 ## Default runtime
 
-| CMake target | Runtime output | Responsibility |
+| CMake target | Windows runtime output | Responsibility |
 | --- | --- | --- |
 | `launcher` | `hl.exe` | Loads the selected engine and filesystem |
 | `hw_engine` | `hw.dll` | Hardware engine, media and provider integration |
@@ -71,8 +73,8 @@ Their original manifests, exports and source lists remain in the
 these outputs or invokes the removed utilities as build-time generators.
 
 Exclusive game/editor/tool implementations and orphan build fragments have been
-deleted. [Source pruning](source-pruning.md) records the stages, relocated
-headers and archived prose. Condition Zero shared the retained CS source lists;
+deleted. Git records their removal; [inherited prose](upstream/README.md)
+preserves the original build/tool documents and notices. Condition Zero shared the retained CS source lists;
 its target removal did not remove CS gameplay. The original Gunman projects
 referenced source absent from this checkout.
 
@@ -98,7 +100,7 @@ Shared engine compatibility strings for other games and compiled `engine/cz*`
 code are retained. They do not require the removed games' implementation trees.
 Dependency/resource directories such as `external/`, `lib/`, `deploy/`,
 `tracker/` and `network/` are outside the game-tree cleanup. Retained platform
-recipes do not establish a supported Linux/macOS port.
+Makefiles are historical; use the CMake presets for supported runtime builds.
 
 ## Build and provider boundaries
 
@@ -111,7 +113,8 @@ CMake Release diagnostics are intentionally opt-in; Release incremental linking
 is disabled. Required intermediates remain under the selected build directory.
 The [build manifest reference](msbuild/README.md#generated-production-inputs)
 describes VGUI1 import-library and A3D generation.
-[Source corrections](source-corrections.md) records C1–C4.
+The Windows engine retains its WSOCK32 multicast option values (4/5/6); other
+Winsock2 consumers keep their separate API constants. Do not interchange them.
 
 Native SDL3 is pinned and staged for the five linker consumers: both engines,
 both game clients and GameUI. Both engines also build/stage the shared mpg123
@@ -127,9 +130,8 @@ file declares `LIBRARY sw`, and the project suppresses the resulting linker
 warning 4070 while producing `swds.dll`. These settings remain unchanged by
 pruning. The dedicated validation does not establish every conditional path.
 
-## Verification scope
+## Testing
 
-[Current validation](mpg123-migration-validation.md) covers post-cleanup builds,
-libmpg123 music, CS/HL gameplay and dedicated-server checks on VM1.
-[SDL3 validation](sdl3-migration-validation.md) retains the earlier comparison and
-benchmarks; [source pruning](source-pruning.md) records removal/header-closure checks.
+[Component fixtures](../tests/native/README.md) cover individual runtime
+boundaries. [Qualification tools](../tools/qualification/README.md) provide
+separate game, server, media and provider checks.

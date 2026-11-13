@@ -1,4 +1,6 @@
 #include "filesystem.h"
+#include "conprint.h"
+#include "../public/native_filesystem_module.h"
 #include "registry.h"
 #include "common.h"
 #include "host.h"
@@ -39,15 +41,18 @@ bool BEnableAddonsFolder()
 	return registry->ReadInt( "addons_folder", 0 ) > 0;
 }
 
-int FileSystem_Init( char* basedir, void* voidfilesystemFactory )
+int FileSystem_Init( char* basedir, CreateInterfaceFn factory )
 {
 	Q_strncpy( s_pBaseDir, basedir, sizeof( s_pBaseDir ) - 1 );
 	s_pBaseDir[sizeof( s_pBaseDir ) - 1] = '\0';
 	host_parms.basedir = s_pBaseDir;
 
-	CreateInterfaceFn factory = (CreateInterfaceFn)voidfilesystemFactory;
 	if ( factory )
 	{
+        if (!cse::filesystem_abi::CompatibleFactory(factory)) {
+            Con_Printf("Incompatible supplied filesystem factory.\n");
+            return 0;
+        }
 		g_FileSystemFactory = factory;
 	}
 	else
@@ -64,10 +69,14 @@ int FileSystem_Init( char* basedir, void* voidfilesystemFactory )
 			return 0;
 #endif
 
-		factory = Sys_GetFactory( g_pFileSystemModule );
-		g_FileSystemFactory = factory;
-		if ( !factory )
-			return 0;
+        factory = cse::filesystem_abi::CheckedFactory(g_pFileSystemModule);
+        if (!factory) {
+            Con_Printf("Incompatible owned filesystem module.\n");
+            Sys_UnloadModule(g_pFileSystemModule);
+            g_pFileSystemModule = nullptr;
+            return 0;
+        }
+        g_FileSystemFactory = factory;
 	}
 
 	g_pFileSystem = (IFileSystem*)factory( FILESYSTEM_INTERFACE_VERSION, NULL );
@@ -83,7 +92,15 @@ int FileSystem_Init( char* basedir, void* voidfilesystemFactory )
 
 void FileSystem_Shutdown()
 {
+#if INTPTR_MAX > INT32_MAX
+    if (g_pFileSystem) {
+        g_pFileSystem->RemoveAllSearchPaths();
+    }
+    g_pFileSystem = nullptr;
+    g_FileSystemFactory = nullptr;
+#else
 	g_pFileSystem->RemoveAllSearchPaths();
+#endif
 	if ( g_pFileSystemModule )
 	{
 		Sys_UnloadModule( g_pFileSystemModule );

@@ -1,4 +1,14 @@
+#if defined(__APPLE__) && defined(SW_RENDERER)
+#include "native_software_lifetime.h"
+#endif
+#if defined(_WIN32)
 #include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef int SOCKET;
+#endif
 #include "isteamgameserver_c_api.h"
 #include "steam_api.h"
 #include "sv_steam3.h"
@@ -33,7 +43,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(_WIN32)
 #include <io.h>
+#endif
 #include <mutex>
 #include <string>
 #include <vector>
@@ -72,6 +84,7 @@ struct SteamDebugOutput_t
 static std::vector<SteamDebugOutput_t> g_SteamDebugOutputQueue;
 static std::mutex g_SteamDebugOutputMutex;
 
+#if !defined(__APPLE__) || !defined(SW_RENDERER)
 static void SteamNetworkingSocketsDebugOutput( ESteamNetworkingSocketsDebugOutputType nType, const char* pszMsg )
 {
 	g_SteamDebugOutputMutex.lock();
@@ -79,13 +92,19 @@ static void SteamNetworkingSocketsDebugOutput( ESteamNetworkingSocketsDebugOutpu
 	g_SteamDebugOutputQueue.push_back( debugOutput );
 	g_SteamDebugOutputMutex.unlock();
 }
+#endif
 
 void SetSteamNetworkingSocketsDebugOutputFunction()
 {
 	if ( SteamNetworkingUtils_SteamAPI() )
 	{
 		SteamNetworkingUtils_SteamAPI()->SetDebugOutputFunction(
-			k_ESteamNetworkingSocketsDebugOutputType_Msg, SteamNetworkingSocketsDebugOutput );
+			k_ESteamNetworkingSocketsDebugOutputType_Msg,
+#if defined(__APPLE__) && defined(SW_RENDERER)
+            cse::software_lifetime::HostNetworkLog());
+#else
+            SteamNetworkingSocketsDebugOutput);
+#endif
 	}
 }
 
@@ -122,6 +141,30 @@ static char g_szRichPresenceOverride[128];
 static uint64 g_currentGameConnectionSteamID;
 static uint32 g_nCurrentGameConnectionPort;
 static uint32 g_nCurrentGameConnectionIP;
+
+AdminProviderStatus CSteam3Server::QueryAdminStatus() {
+    AdminProviderStatus status;
+    if (!m_adminInitialized || !m_bLoggedOn) {
+        return status;
+    }
+    auto* provider = SteamGameServer();
+    if (!provider) {
+        return status;
+    }
+    status.available = true;
+    status.connected = provider->BLoggedOn();
+    status.secureRequested = m_bWantToBeSecure;
+    status.secure = provider->BSecure();
+    status.restartRequested = provider->WasRestartRequested();
+    status.failure = m_adminFailure;
+    return status;
+}
+
+AdminProviderStatus Steam_QueryAdminStatus() {
+    return s_Steam3Server ? s_Steam3Server->QueryAdminStatus() : AdminProviderStatus{};
+}
+
+extern void NotifyDedicatedServerUI(const char* message);
 
 CSteam3::CSteam3() : m_bLoggedOn( false ), m_bLogOnResult( false ), m_hSteamPipe( 0 )
 {
@@ -474,7 +517,9 @@ void CSteam3Server::Activate()
 		return;
 	}
 
-	m_bLoggedOn = true;
+    m_adminFailure = 0;
+    m_adminInitialized = false;
+    m_bLoggedOn = true;
 	uint32 serverIP = 0;
 	if ( net_local_adr.type == NA_IP )
 		serverIP = NET_NetAdr_GetIPHostByteOrder( &net_local_adr );
@@ -505,6 +550,7 @@ void CSteam3Server::Activate()
 			 STEAMGAMESERVER_QUERY_PORT_SHARED, mode, gpszVersionString ) )
 		Sys_Error( "Unable to initialize Steam." );
 
+    m_adminInitialized = true;
 	SteamGameServer()->SetProduct( gpszProductString );
 	SteamGameServer()->SetModDir( gameDirectory );
 	SteamGameServer()->SetDedicatedServer( cls.state == ca_dedicated );
@@ -712,6 +758,11 @@ static void ReadLaunchCommandLine()
 
 void CSteam3Server::OnLogonFailure( SteamServerConnectFailure_t* failure )
 {
+    if (!m_adminInitialized) {
+        return;
+    }
+    m_adminFailure = static_cast<int>(failure->m_eResult);
+    NotifyDedicatedServerUI("ProviderStatus");
 	if ( !m_bLogOnResult && failure->m_eResult != k_EResultServiceUnavailable )
 	{
 		if ( !m_bLanOnly )
@@ -719,7 +770,7 @@ void CSteam3Server::OnLogonFailure( SteamServerConnectFailure_t* failure )
 	}
 	else if ( !m_bLogOnResult && !m_bLanOnly )
 	{
-		Con_Printf( "Connection to Steam servers successful (SU).\n" );
+		Con_Printf( "Steam servers unavailable; authentication has not succeeded.\n" );
 		if ( m_bWantToBeSecure )
 			Con_Printf( "   VAC secure mode not available.\n" );
 	}
@@ -733,6 +784,10 @@ void CSteam3Server::OnFakeIPResult( SteamNetworkingFakeIPResult_t* )
 
 void CSteam3Server::OnGSPolicyResponse( GSPolicyResponse_t* )
 {
+    if (!m_adminInitialized) {
+        return;
+    }
+    NotifyDedicatedServerUI("ProviderStatus");
 	if ( SteamGameServer()->BSecure() )
 		Con_Printf( "   VAC secure mode is activated.\n" );
 	else
@@ -890,6 +945,11 @@ void CSteam3Server::OnGSClientKick( GSClientKick_t* result )
 
 void CSteam3Server::OnLogonSuccess( SteamServersConnected_t* )
 {
+    if (!m_adminInitialized) {
+        return;
+    }
+    m_adminFailure = 0;
+    NotifyDedicatedServerUI("ProviderStatus");
 	if ( m_bLogOnResult )
 	{
 		if ( !m_bLanOnly )
@@ -907,6 +967,8 @@ void CSteam3Server::OnLogonSuccess( SteamServersConnected_t* )
 
 void CSteam3Server::Shutdown()
 {
+    m_adminInitialized = false;
+    m_adminFailure = 0;
 	if ( !m_bLoggedOn )
 		return;
 
@@ -1214,21 +1276,27 @@ void CSteam3Client::OnGameOverlayActivated( GameOverlayActivated_t* activated )
 		Cbuf_AddText( "unpause;" );
 }
 
-void CSteam3Client::Shutdown()
-{
-	if ( !m_bLoggedOn )
-		return;
-
-	if ( SteamNetworkingSockets_SteamAPI() && ip_fakeudpports[NS_CLIENT] )
-	{
-		ip_fakeudpports[NS_CLIENT]->DestroyFakeUDPPort();
-		ip_fakeudpports[NS_CLIENT] = nullptr;
-	}
-	if ( SteamInput() )
-		SteamInput()->Shutdown();
-	if ( eng->GetQuitting() == 1 )
-		SteamAPI_Shutdown();
-	m_bLoggedOn = false;
+void CSteam3Client::Shutdown() {
+    if (!m_bLoggedOn) {
+        return;
+    }
+    if (SteamNetworkingSockets_SteamAPI() && ip_fakeudpports[NS_CLIENT]) {
+        ip_fakeudpports[NS_CLIENT]->DestroyFakeUDPPort();
+        ip_fakeudpports[NS_CLIENT] = nullptr;
+    }
+    if (SteamInput()) {
+        SteamInput()->Shutdown();
+    }
+#if defined(__APPLE__)
+    // Native macOS restarts replace the process. Retire the anonymous server
+    // transport while SteamClient is alive, including the restart quitting state.
+    SteamAPI_Shutdown();
+#else
+    if (eng->GetQuitting() == 1) {
+        SteamAPI_Shutdown();
+    }
+#endif
+    m_bLoggedOn = false;
 }
 
 void CSteam3Client::OnNewUrlLaunchParameters( NewUrlLaunchParameters_t* )
@@ -1413,7 +1481,7 @@ int CSteam3Client::InitiateGameConnection(
 	}
 
 	if ( hostIP != g_nCurrentGameConnectionIP || hostPort != g_nCurrentGameConnectionPort
-		 || g_currentGameConnectionSteamID != steamID || secureConnection != secure )
+		 || g_currentGameConnectionSteamID != steamID || secureConnection != secure || blobSize <= 0 )
 	{
 		if ( g_nCurrentGameConnectionIP != 0 || g_nCurrentGameConnectionPort != 0 )
 		{
@@ -1429,14 +1497,18 @@ int CSteam3Client::InitiateGameConnection(
 				g_nCurrentGameConnectionIP, static_cast<uint16>( g_nCurrentGameConnectionPort ), secureConnection );
 	}
 
-	if ( maxData < blobSize )
-	{
-#if defined( _WIN32 )
-		ASSERT_AT( false, 1498 );
-#else
-		return 0;
+    // Failed SDK calls must never become a cached ticket or a size_t copy length.
+    if (blobSize <= 0 || blobSize > GAME_CONNECTION_BLOB_BYTES) {
+        blobSize = 0;
+        return 0;
+    }
+
+    if (maxData < blobSize) {
+#if defined(_WIN32)
+        ASSERT_AT(false, 1498);
 #endif
-	}
+        return 0;
+    }
 	std::memcpy( data, blob, static_cast<std::size_t>( blobSize ) );
 	return blobSize;
 }
@@ -1463,7 +1535,11 @@ void CSteam3Client::InitClient()
 		return;
 
 	m_bLoggedOn = true;
+#if defined(_WIN32)
 	_unlink( "steam_appid.txt" );
+#else
+    unlink("steam_appid.txt");
+#endif
 	if ( !std::getenv( "SteamAppId" ) )
 	{
 		int appID = GetGameAppID();

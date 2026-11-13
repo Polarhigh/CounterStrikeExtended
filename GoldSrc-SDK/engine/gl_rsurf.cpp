@@ -16,7 +16,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(_WIN32)
 #include <malloc.h>
+#endif
 
 #include "buildslave_assert.h"
 #define ASSERT_FILE BUILDSLAVE_PATH( L"engine\\GL_RSURF.C" )
@@ -247,10 +249,11 @@ void R_SetFogEnabled( qboolean bEnable )
 {
 	int i;
 
-	if ( bEnable )
-		glEnable( GL_FOG );
-	else
-		glDisable( GL_FOG );
+    if (bEnable) {
+        CseRenderEnable(GL_FOG);
+    } else {
+        CseRenderDisable(GL_FOG);
+    }
 
 	R_LoadShaders();
 	if ( !R_UsingShaders() )
@@ -302,7 +305,7 @@ void R_SetFogMode( int mode )
 	int i;
 	GLuint shaderMode;
 
-	glFogi( GL_FOG_MODE, mode );
+    CseRenderFogi( GL_FOG_MODE, mode );
 
 	R_LoadShaders();
 	if ( !R_UsingShaders() )
@@ -1173,23 +1176,23 @@ void R_DrawSequentialPoly( msurface_t* s, int face, qboolean cleanUpShaderState 
 				  || sOffset != displaylist->scrolloffset
 				  || renderDetailTexture != displaylist->renderDetailTexture ) )
 		{
-			glDeleteLists( displaylist->gl_displaylist, 1 );
+            CseRenderDeleteLists( displaylist->gl_displaylist, 1 );
 			displaylist->gl_displaylist = 0;
 		}
 
 		if ( gl_display_lists.value && displaylist->gl_displaylist )
 		{
-			glCallList( displaylist->gl_displaylist );
+            CseRenderCallList( displaylist->gl_displaylist );
 		}
 		else
 		{
 			if ( gl_display_lists.value )
 			{
-				displaylist->gl_displaylist = glGenLists( 1 );
+                displaylist->gl_displaylist = CseRenderGenLists( 1 );
 				displaylist->rendermode = currententity->curstate.rendermode;
 				displaylist->scrolloffset = sOffset;
 				displaylist->renderDetailTexture = renderDetailTexture;
-				glNewList( displaylist->gl_displaylist, GL_COMPILE_AND_EXECUTE );
+                CseRenderNewList( displaylist->gl_displaylist, GL_COMPILE_AND_EXECUTE );
 			}
 
 			qglBegin( GL_POLYGON );
@@ -1204,8 +1207,9 @@ void R_DrawSequentialPoly( msurface_t* s, int face, qboolean cleanUpShaderState 
 			}
 			qglEnd();
 
-			if ( gl_display_lists.value )
-				glEndList();
+            if (gl_display_lists.value) {
+                CseRenderEndList();
+            }
 		}
 
 		if ( renderDetailTexture )

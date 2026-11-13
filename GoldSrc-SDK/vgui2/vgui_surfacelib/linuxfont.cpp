@@ -9,7 +9,12 @@
 #if !defined( _WIN32 )
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#if defined(__APPLE__)
+#include "native/MacFontDiscovery.h"
+#include FT_TRUETYPE_TABLES_H
+#else
 #include <fontconfig/fontconfig.h>
+#endif
 #endif
 
 #include <cassert>
@@ -21,6 +26,7 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <limits>
 
 #if defined( _WIN32 )
 #include <windows.h>
@@ -66,7 +72,9 @@ struct font_scale_t
 };
 
 #if !defined( _WIN32 )
+#if !defined(__APPLE__)
 static font_scale_t g_FontScales[3] = { { "DejaVu Sans", 0.875f }, { "Liberation Sans", 0.9375f }, { "Fira Sans", 0.875f } };
+#endif
 
 CUtlRBTree<CLinuxFont::font_name_entry> CLinuxFont::m_FriendlyNameCache( 0, 0, &CLinuxFont::FontEntryLess );
 bool CLinuxFont::ms_bSetFriendlyNameCacheLessFunc = false;
@@ -100,6 +108,7 @@ static char LowByteDifference( int rounded, unsigned char first, unsigned char s
 	return (char)( (char)rounded - first - second - third );
 }
 
+#if !defined(__APPLE__)
 static FcPattern* FontMatch( const char* object, FcType type, const void* value, ... )
 {
 	va_list arguments;
@@ -135,6 +144,7 @@ static FcPattern* FontMatch( const char* object, FcType type, const void* value,
 	FcPatternDestroy( pattern );
 	return match;
 }
+#endif
 #endif
 
 bool CLinuxFont::ExtendedABCWidthsCacheLessFunc( const abc_cache_t& lhs, const abc_cache_t& rhs )
@@ -192,6 +202,11 @@ CLinuxFont::CLinuxFont() : m_ExtendedABCWidthsCache( 256, 0, &CLinuxFont::Extend
 
 CLinuxFont::~CLinuxFont()
 {
+#if defined(__APPLE__)
+    for (CLinuxFont* fallback : m_MacFallbackFonts) {
+        delete fallback;
+    }
+#endif
 #if defined( _WIN32 )
 	if ( m_hFont )
 		DeleteObject( static_cast<HGDIOBJ>( m_hFont ) );
@@ -300,6 +315,19 @@ bool CLinuxFont::CreateWindowsFont( const char* name, int tall, int weight, int 
 bool CLinuxFont::FindFontDataFile(
 	const char* windowsFontName, int, int weight, int, int, int flags, char* dataFile, int dataFileChars )
 {
+#if defined(__APPLE__)
+    if (!dataFile || dataFileChars <= 0) {
+        return false;
+    }
+    dataFile[0] = '\0';
+    cse::fonts::FontFile file;
+    if (!cse::fonts::FindMacFontFile(FontManager().m_Library, windowsFontName, weight,
+        (flags & FONTFLAG_ITALIC) != 0, file) || file.path.size() >= static_cast<std::size_t>(dataFileChars)) {
+        return false;
+    }
+    std::memcpy(dataFile, file.path.c_str(), file.path.size() + 1);
+    return true;
+#else
 	const char* family = windowsFontName;
 	FcChar8* filename;
 	FcPattern* pattern;
@@ -333,11 +361,38 @@ bool CLinuxFont::FindFontDataFile(
 	}
 
 	return found;
+#endif
 }
 #endif
 
 bool CLinuxFont::Create( const char* windowsFontName, int tall, int weight, int blur, int scanlines, int flags )
 {
+#if defined(__APPLE__)
+    // GetName() may supply the input when recreating this same font.
+    constexpr std::size_t maxNameBytes = 1024;
+    const bool validName = windowsFontName && windowsFontName[0]
+        && strnlen(windowsFontName, maxNameBytes + 1) <= maxNameBytes;
+    const std::string requestedName = validName ? windowsFontName : "";
+    for (CLinuxFont* fallback : m_MacFallbackFonts) {
+        delete fallback;
+    }
+    m_MacFallbackFonts.clear();
+    m_MacFallbackByChar.clear();
+    m_MacRequestedName.clear();
+    m_MacPostScriptName.clear();
+    if (face) {
+        FT_Done_Face(face);
+        face = nullptr;
+    }
+    delete[] m_pGaussianDistribution;
+    m_pGaussianDistribution = nullptr;
+    m_szName[0] = 0;
+    if (requestedName.empty()) {
+        return false;
+    }
+    m_MacRequestedName = requestedName;
+    windowsFontName = m_MacRequestedName.c_str();
+#endif
 	int i;
 
 #if defined( _WIN32 )
@@ -357,11 +412,13 @@ bool CLinuxFont::Create( const char* windowsFontName, int tall, int weight, int 
 #else
 	float scale = 1.0f;
 
+#if !defined(__APPLE__)
 	for ( i = 0; i < 3; i++ )
 	{
 		if ( !strcasecmp( g_FontScales[i].font, windowsFontName ) )
 			scale = g_FontScales[i].scale;
 	}
+#endif
 
 	strncpy( m_szName, windowsFontName, sizeof( m_szName ) - 1 );
 	m_szName[sizeof( m_szName ) - 1] = 0;
@@ -379,6 +436,20 @@ bool CLinuxFont::Create( const char* windowsFontName, int tall, int weight, int 
 	m_iHeight = (int)( (float)tall * scale );
 	m_bAdditive = ( flags & FONTFLAG_ADDITIVE ) != 0;
 
+#if defined(__APPLE__)
+    cse::fonts::FontFile file;
+    if (!cse::fonts::FindMacFontFile(FontManager().m_Library, windowsFontName, weight,
+        (flags & FONTFLAG_ITALIC) != 0, file)) {
+        std::printf("Unable to discover a FreeType-readable macOS font named %s\n", windowsFontName);
+        m_szName[0] = 0;
+        return false;
+    }
+    if (FT_New_Face(FontManager().m_Library, file.path.c_str(), file.faceIndex, &face)) {
+        m_szName[0] = 0;
+        return false;
+    }
+    m_MacPostScriptName = file.postScriptName;
+#else
 	if ( !FcInit() )
 	{
 		printf( "Unable to find font named %s\n", windowsFontName );
@@ -422,6 +493,7 @@ bool CLinuxFont::Create( const char* windowsFontName, int tall, int weight, int 
 
 	if ( FT_New_Face( FontManager().m_Library, fontFile, 0, &face ) )
 		return false;
+#endif
 
 	FT_Set_Pixel_Sizes( face, 0, (FT_UInt)( m_iHeight - 1 ) );
 
@@ -763,10 +835,120 @@ void CLinuxFont::RenderWindowsGlyph( int ch, int rgbaX, int rgbaY, int rgbaWide,
 }
 #endif
 
+#if defined(__APPLE__)
+bool CLinuxFont::RenderNativeGlyph(int ch, int rgbaX, int rgbaY, int rgbaWide, int rgbaTall,
+    unsigned char* rgba) {
+    constexpr int ColorChannels = 4;
+    constexpr int AlphaChannel = 3;
+    constexpr unsigned char FullCoverage = 255;
+    constexpr unsigned int BitsPerByte = 8;
+    constexpr unsigned char MostSignificantBit = 0x80;
+    if (!face || !rgba || rgbaX < 0 || rgbaY < 0 || rgbaWide <= 0 || rgbaTall <= 0
+        || rgbaX >= rgbaWide || rgbaY >= rgbaTall
+        || static_cast<std::uint64_t>(rgbaWide) * rgbaTall
+            > static_cast<std::uint64_t>((std::numeric_limits<std::ptrdiff_t>::max)()) / ColorChannels) {
+        return false;
+    }
+    const FT_Int32 loadFlags = FT_LOAD_RENDER | (m_bAntiAliased
+        ? FT_LOAD_TARGET_LIGHT : FT_LOAD_TARGET_MONO | FT_LOAD_MONOCHROME);
+    if (FT_Load_Glyph(face, FT_Get_Char_Index(face, static_cast<FT_ULong>(ch)), loadFlags) != 0) {
+        return false;
+    }
+    const FT_GlyphSlot slot = face->glyph;
+    const FT_Bitmap& bitmap = slot->bitmap;
+    const bool monochrome = bitmap.pixel_mode == FT_PIXEL_MODE_MONO;
+    if (bitmap.rows != 0 && bitmap.width != 0) {
+        if (!bitmap.buffer || (!monochrome && bitmap.pixel_mode != FT_PIXEL_MODE_GRAY)
+            || (!monochrome && bitmap.num_grays < 2)) {
+            return false;
+        }
+        const std::int64_t pitch = bitmap.pitch;
+        const std::uint64_t rowBytes = static_cast<std::uint64_t>(pitch < 0 ? -pitch : pitch);
+        const std::uint64_t minimumRowBytes = monochrome
+            ? (static_cast<std::uint64_t>(bitmap.width) + BitsPerByte - 1) / BitsPerByte : bitmap.width;
+        if (rowBytes < minimumRowBytes || rowBytes * bitmap.rows
+            > static_cast<std::uint64_t>((std::numeric_limits<std::ptrdiff_t>::max)())) {
+            return false;
+        }
+        // FreeType's up-flow storage starts at the bottom row; pitch includes all row padding.
+        const unsigned char* firstRow = bitmap.buffer;
+        if (pitch < 0) {
+            firstRow += static_cast<std::size_t>(rowBytes) * (bitmap.rows - 1);
+        }
+        for (unsigned int y = 0; y < bitmap.rows; ++y) {
+            const std::int64_t targetY = static_cast<std::int64_t>(rgbaY) + m_iAscent - slot->bitmap_top + y;
+            if (targetY < rgbaY || targetY >= rgbaTall) {
+                continue;
+            }
+            const unsigned char* source = firstRow + static_cast<std::ptrdiff_t>(pitch * y);
+            for (unsigned int x = 0; x < bitmap.width; ++x) {
+                const std::int64_t targetX = static_cast<std::int64_t>(rgbaX) + slot->bitmap_left + x;
+                if (targetX < rgbaX || targetX >= rgbaWide) {
+                    continue;
+                }
+                const unsigned char coverage = monochrome
+                    ? ((source[x / BitsPerByte] & (MostSignificantBit >> (x % BitsPerByte))) ? FullCoverage : 0)
+                    : static_cast<unsigned char>(static_cast<unsigned int>(source[x]) * FullCoverage
+                        / (bitmap.num_grays - 1));
+                unsigned char* pixel = rgba
+                    + (static_cast<std::size_t>(targetY) * rgbaWide + targetX) * ColorChannels;
+                pixel[0] = FullCoverage;
+                pixel[1] = FullCoverage;
+                pixel[2] = FullCoverage;
+                pixel[AlphaChannel] = coverage;
+            }
+        }
+    }
+    if (m_bUnderlined || (m_iFlags & FONTFLAG_STRIKEOUT) != 0) {
+        int a = 0;
+        int b = 0;
+        int c = 0;
+        GetCharABCWidths(ch, a, b, c);
+        const std::int64_t advance = static_cast<std::int64_t>(a) + b + c;
+        const auto rule = [&](FT_Short position, FT_Short thickness) {
+            constexpr FT_Pos FixedPixelScale = 64;
+            constexpr FT_Pos HalfPixel = FixedPixelScale / 2;
+            const FT_Pos scaledPosition = FT_MulFix(position, face->size->metrics.y_scale);
+            const FT_Pos scaledThickness = FT_MulFix(thickness, face->size->metrics.y_scale);
+            const int pixelsThick = std::max(1, static_cast<int>((scaledThickness + HalfPixel) / FixedPixelScale));
+            const std::int64_t center = static_cast<std::int64_t>(rgbaY) + m_iAscent
+                - static_cast<int>(std::floor(static_cast<double>(scaledPosition) / FixedPixelScale + 0.5));
+            const std::int64_t top = center - pixelsThick / 2;
+            const std::int64_t right = std::min<std::int64_t>(rgbaWide,
+                static_cast<std::int64_t>(rgbaX) + advance);
+            const std::int64_t bottom = std::min<std::int64_t>(rgbaTall,
+                static_cast<std::int64_t>(rgbaY) + m_iHeight);
+            for (std::int64_t y = std::max<std::int64_t>(rgbaY, top); y < std::min(bottom, top + pixelsThick); ++y) {
+                for (std::int64_t x = rgbaX; x < right; ++x) {
+                    unsigned char* pixel = rgba + (static_cast<std::size_t>(y) * rgbaWide + x) * ColorChannels;
+                    std::memset(pixel, FullCoverage, ColorChannels);
+                }
+            }
+        };
+        if (m_bUnderlined) {
+            rule(face->underline_position, face->underline_thickness);
+        }
+        if ((m_iFlags & FONTFLAG_STRIKEOUT) != 0) {
+            const auto* metrics = static_cast<const TT_OS2*>(FT_Get_Sfnt_Table(face, ft_sfnt_os2));
+            // SFNT fonts carry the same baseline-relative strikeout metrics consumed by GDI.
+            // Non-SFNT faces use their ascent/descent midpoint and underline stem thickness.
+            const FT_Short position = metrics ? metrics->yStrikeoutPosition
+                : static_cast<FT_Short>((face->ascender + face->descender) / 2);
+            rule(position, metrics ? metrics->yStrikeoutSize : face->underline_thickness);
+        }
+    }
+    return true;
+}
+#endif
+
 void CLinuxFont::GetCharRGBA( int ch, int rgbaX, int rgbaY, int rgbaWide, int rgbaTall, unsigned char* rgba )
 {
 #if defined( _WIN32 )
 	RenderWindowsGlyph( ch, rgbaX, rgbaY, rgbaWide, rgbaTall, rgba );
+#elif defined(__APPLE__)
+    if (!RenderNativeGlyph(ch, rgbaX, rgbaY, rgbaWide, rgbaTall, rgba)) {
+        return;
+    }
 #else
 	FT_Error error = FT_Load_Glyph( face, FT_Get_Char_Index( face, (FT_ULong)ch ), FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT );
 	if ( error )
@@ -821,8 +1003,14 @@ void CLinuxFont::GetCharRGBA( int ch, int rgbaX, int rgbaY, int rgbaWide, int rg
 
 bool CLinuxFont::IsEqualTo( const char* windowsFontName, int tall, int weight, int blur, int, int flags )
 {
+#if defined(__APPLE__)
+    if (!windowsFontName || strcasecmp(windowsFontName, m_MacRequestedName.c_str())) {
+        return false;
+    }
+#else
 	if ( strcasecmp( windowsFontName, m_szName ) )
 		return false;
+#endif
 
 	return m_iTall == tall && m_iWeight == weight && m_iBlur == blur && m_iFlags == flags;
 }
@@ -875,6 +1063,59 @@ void CLinuxFont::SetAsActiveFont( HDC hdc )
 void* CLinuxFont::SetAsActiveFont( GLXContext )
 {
 	return NULL;
+}
+#endif
+
+#if defined(__APPLE__)
+CLinuxFont* CLinuxFont::GetMacFallbackFontForChar(int ch) {
+    constexpr int firstSurrogate = 0xd800;
+    constexpr int lastSurrogate = 0xdfff;
+    constexpr int maxUnicodeScalar = 0x10ffff;
+    if (!face || ch < 0 || ch > maxUnicodeScalar || (ch >= firstSurrogate && ch <= lastSurrogate)) {
+        return nullptr;
+    }
+    const auto cached = m_MacFallbackByChar.find(ch);
+    if (cached != m_MacFallbackByChar.end()) {
+        return cached->second;
+    }
+    constexpr int maxBmpScalar = 0xffff;
+    constexpr int supplementaryBase = 0x10000;
+    constexpr int surrogateBits = 10;
+    constexpr int lowSurrogateBase = 0xdc00;
+    constexpr int surrogateMask = 0x3ff;
+    constexpr std::size_t maxUtf16ScalarUnits = 2;
+    std::uint16_t utf16[maxUtf16ScalarUnits] = {};
+    std::size_t length = 1;
+    if (ch <= maxBmpScalar) {
+        utf16[0] = static_cast<std::uint16_t>(ch);
+    } else {
+        const int supplementary = ch - supplementaryBase;
+        utf16[0] = static_cast<std::uint16_t>(firstSurrogate + (supplementary >> surrogateBits));
+        utf16[1] = static_cast<std::uint16_t>(lowSurrogateBase + (supplementary & surrogateMask));
+        length = 2;
+    }
+    cse::fonts::FontFile file;
+    if (!cse::fonts::FindMacFontFallback(FontManager().m_Library, m_MacPostScriptName.c_str(), m_iWeight,
+        (m_iFlags & FONTFLAG_ITALIC) != 0, utf16, length, file)) {
+        m_MacFallbackByChar.emplace(ch, nullptr);
+        return nullptr;
+    }
+    for (CLinuxFont* fallback : m_MacFallbackFonts) {
+        if (fallback->m_MacPostScriptName == file.postScriptName) {
+            m_MacFallbackByChar.emplace(ch, fallback);
+            return fallback;
+        }
+    }
+    CLinuxFont* fallback = new CLinuxFont;
+    if (!fallback->Create(file.postScriptName.c_str(), m_iTall, m_iWeight, m_iBlur, m_iScanLines, m_iFlags)
+        || !fallback->HasChar(static_cast<wchar_t>(ch))) {
+        delete fallback;
+        m_MacFallbackByChar.emplace(ch, nullptr);
+        return nullptr;
+    }
+    m_MacFallbackFonts.push_back(fallback);
+    m_MacFallbackByChar.emplace(ch, fallback);
+    return fallback;
 }
 #endif
 

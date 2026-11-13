@@ -11,13 +11,17 @@
 //=============================================================================
 
 #include "vgui_internal.h"
+#if defined(__APPLE__)
+#include "../../public/native_vgui_completion.h"
+#include <pthread.h>
+#endif
 
 #include "VPanel.h"
 #include "KeyValues.h"
 #include "vgui_messages.h"
 #include "interface.h"
 #include "utllinkedlist.h"
-#include "UtlVector.h"
+#include "utlvector.h"
 #include "utlpriorityqueue.h"
 #include "vgui/ISurface.h"
 #include "vgui/IVGui.h"
@@ -96,6 +100,9 @@ public:
 
 	bool Init( CreateInterfaceFn* factoryList, int numFactories ) override;
 	void Shutdown() override;
+#if defined(__APPLE__)
+    cse::vgui_completion::Result FinishNativeClient(const void* selectedSurface) noexcept;
+#endif
 
 	void Start() override;
 	void Stop() override;
@@ -139,6 +146,13 @@ public:
 	};
 
 private:
+#if defined(__APPLE__)
+    friend void vgui2::DispatchStandaloneInputMessages();
+    bool m_nativeSealed = false;
+    bool m_nativeOwnerSet = false;
+    pthread_t m_nativeOwner{};
+    unsigned int m_nativeFrameDepth = 0;
+#endif
 	struct Context_t
 	{
 		vgui2::HInputContext	m_hInputContext;
@@ -178,6 +192,13 @@ CVGui g_VGui;
 namespace vgui2
 {
 IVGui* g_pIVgui = &g_VGui;
+#if defined(__APPLE__)
+void DispatchStandaloneInputMessages() {
+    if (!g_VGui.m_InDispatcher) {
+        g_VGui.DispatchMessages();
+    }
+}
+#endif
 }
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CVGui, IVGui, "VGUI_ivgui006", g_VGui );
 
@@ -219,8 +240,19 @@ bool CVGui::Init( CreateInterfaceFn* factoryList, int numFactories )
 		return true;
 	}
 
+#if defined(__APPLE__)
+    if (m_nativeFrameDepth || m_InDispatcher || m_PanelList.Count()) {
+        return false;
+    }
+    m_nativeOwner = pthread_self();
+    m_nativeOwnerSet = true;
+    m_nativeSealed = false;
+    m_bInitialized = vgui2::VGui_InternalLoadInterfaces(factoryList, numFactories);
+    return m_bInitialized;
+#else
 	m_bInitialized = true;
 	return vgui2::VGui_InternalLoadInterfaces( factoryList, numFactories );
+#endif
 }
 
 vgui2::HContext CVGui::CreateContext()
@@ -243,32 +275,7 @@ vgui2::VPANEL CVGui::AllocPanel()
 	return (vgui2::VPANEL)panel;
 }
 
-vgui2::HPanel CVGui::PanelToHandle( vgui2::VPANEL panel )
-{
-	if ( panel )
-	{
-		unsigned short listEntry = ( (vgui2::VPanel*)panel )->GetListEntry();
-		return ( (unsigned int)listEntry << 16 ) + m_PanelList[listEntry].m_iSerialNumber;
-	}
-
-	return INVALID_VGUI_PANEL;
-}
-
-vgui2::VPANEL CVGui::HandleToPanel( vgui2::HPanel index )
-{
-	if ( index == INVALID_VGUI_PANEL )
-	{
-		return 0;
-	}
-
-	unsigned short listEntry = (unsigned short)( index >> 16 );
-	if ( m_PanelList.IsValidIndex( listEntry ) && m_PanelList[listEntry].m_iSerialNumber == (unsigned short)index )
-	{
-		return m_PanelList[listEntry].m_pPanel;
-	}
-
-	return 0;
-}
+#include "panel_handles_impl.h"
 
 //-----------------------------------------------------------------------------
 // Purpose: Called whenever a panel is constructed
@@ -357,10 +364,13 @@ void CVGui::DPrintf2( const char* format, ... )
 #endif
 }
 
-void CVGui::Shutdown()
-{
-	DestroyAllContexts();
-	ClearMessageQueues();
+void CVGui::Shutdown() {
+    DestroyAllContexts();
+    ClearMessageQueues();
+#if defined(__APPLE__)
+    m_bInitialized = false;
+    m_bRunning = false;
+#endif
 }
 
 void CVGui::Start()
@@ -380,6 +390,18 @@ bool CVGui::IsRunning()
 
 void CVGui::RunFrame()
 {
+#if defined(__APPLE__)
+    if (m_nativeSealed) {
+        return;
+    }
+    ++m_nativeFrameDepth;
+    struct FrameScope {
+        unsigned int& depth;
+        ~FrameScope() {
+            --depth;
+        }
+    } frameScope{m_nativeFrameDepth};
+#endif
 	vgui2::g_pSurface->RunFrame();
 	vgui2::g_pSystem->RunFrame();
 
@@ -736,14 +758,55 @@ void vgui_strcpy( char* dst, int dstLen, const char* src )
 	ASSERT_AT( dstLen>=0, 942 );
 	ASSERT_AT( src!=null, 943 );
 
-	int length = strlen( src ) + 1;
-	if ( length > dstLen )
-	{
-		length = dstLen;
-	}
+	const size_t sourceLength = strlen(src);
+    const int length = sourceLength >= static_cast<size_t>(dstLen) ? dstLen : static_cast<int>(sourceLength) + 1;
 
 	memcpy( dst, src, length - 1 );
 	dst[length - 1] = 0;
 }
 
 }
+
+#if defined(__APPLE__)
+cse::vgui_completion::Result CVGui::FinishNativeClient(const void* selectedSurface) noexcept {
+    using cse::vgui_completion::Result;
+    if (!pthread_main_np() || (m_nativeOwnerSet && !pthread_equal(m_nativeOwner, pthread_self()))
+        || m_nativeFrameDepth || m_InDispatcher) {
+        return Result::Busy;
+    }
+    if (m_nativeSealed) {
+        return Result::Complete;
+    }
+    if (vgui2::g_pSurface != selectedSurface) {
+        return Result::ForeignOwner;
+    }
+    // The real GameUI/client/root owners must finish their serial deletion first.
+    // A remaining detached panel or queued callback is not ours to delete blindly.
+    if (m_PanelList.Count() || m_TickSignalVec.Count() || m_MessageQueue.Count()
+        || m_SecondaryQueue.Count() || m_DelayedMessageQueue.Count()) {
+        return Result::Busy;
+    }
+    DestroyAllContexts();
+    if (m_Contexts.Count()) {
+        return Result::Busy;
+    }
+    m_bRunning = false;
+    m_bInitialized = false;
+    m_nativeSealed = true;
+    vgui2::g_pSurface = nullptr;
+    vgui2::g_pFileSystem = nullptr;
+    vgui2::g_pIPanel = nullptr;
+    vgui2::g_pLocalize = nullptr;
+    g_pKeyValues = nullptr;
+    return Result::Complete;
+}
+
+namespace {
+cse::vgui_completion::Result FinishNativeVguiClient(const void* surface) noexcept {
+    return g_VGui.FinishNativeClient(surface);
+}
+}
+extern "C" __attribute__((visibility("default"))) const cse::vgui_completion::Api CseNativeVguiCompletionV1 = {
+    sizeof(cse::vgui_completion::Api), cse::vgui_completion::Version, FinishNativeVguiClient
+};
+#endif

@@ -1,3 +1,6 @@
+#if defined(__APPLE__)
+#include "native_mouse_window.h"
+#endif
 #include "../common/sdl3_input.h"
 #include "engine_apiproxy.h"
 #include "client.h"
@@ -37,6 +40,13 @@
 #include "../common/event_api.h"
 #include "../common/demo_api.h"
 #include "../common/r_studioint.h"
+#include "../common/con_nprint.h"
+#include "../common/screenfade.h"
+#include "../pm_shared/pm_movevars.h"
+#include "kbutton.h"
+#include "../common/client_module_entry.h"
+#include "../common/client_module_contracts.h"
+#include "../common/client_module_required_exports.h"
 #include <cstdlib>
 
 #include <cstring>
@@ -64,7 +74,7 @@ extern "C" void SetMouseEnable( qboolean enabled );
 model_t* SPR_GetModelPointer( HSPRITE sprite );
 void SPR_Init();
 void SPR_Shutdown();
-void ClientDLL_CheckStudioInterface( HINSTANCE clientModule );
+void ClientDLL_CheckStudioInterface( HMODULE clientModule );
 
 cldll_func_t cl_funcs;
 qboolean fClientLoaded;
@@ -75,7 +85,68 @@ cvar_t* joy_sidesensitivity;
 cvar_t* joy_pitchsensitivity;
 cvar_t* joy_yawsensitivity;
 
-HINSTANCE hClientDLL;
+HMODULE hClientDLL;
+
+static CseInitializeClient initializeOwnedClient = nullptr;
+static CseExchangeClient exchangeOwnedClient = nullptr;
+static CseClientStudio getOwnedClientStudio = nullptr;
+
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+static bool nativeClientMouseRequested = false;
+static bool nativeClientMouseActive = false;
+#endif
+
+static void ClearOwnedClientBindings() {
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+    nativeClientMouseRequested = false;
+    nativeClientMouseActive = false;
+#endif
+    initializeOwnedClient = nullptr;
+    exchangeOwnedClient = nullptr;
+    getOwnedClientStudio = nullptr;
+}
+
+static bool ValidateOwnedClientLibrary(void* library, const char* filename) {
+    const auto describe = reinterpret_cast<cse::abi::GetModuleAbi>(Sys_GetProcAddress(library, "CseGetModuleAbi"));
+    const auto initialize = reinterpret_cast<CseInitializeClient>(
+        Sys_GetProcAddress(library, "CseInitializeClientModule"));
+    const auto exchange = reinterpret_cast<CseExchangeClient>(
+        Sys_GetProcAddress(library, "CseExchangeClientFunctions"));
+    const auto studio = reinterpret_cast<CseClientStudio>(
+        Sys_GetProcAddress(library, "CseGetClientStudioInterface"));
+    const auto status = cse::abi::CheckRequired(cse::abi::ClientModuleDescriptor, describe ? describe() : nullptr);
+    if (status != cse::abi::Compatibility::Compatible || !initialize || !exchange || !studio) {
+        Con_Printf("Client module ABI mismatch in %s (descriptor status %u)\n", filename,
+            static_cast<unsigned int>(status));
+        return false;
+    }
+    initializeOwnedClient = initialize;
+    exchangeOwnedClient = exchange;
+    getOwnedClientStudio = studio;
+    return true;
+}
+
+static bool ValidateOwnedClientFunctions(const cldll_func_t& functions) {
+#define CSE_CHECK_CLIENT_EXPORT(member, name) \
+    if (!functions.member) { \
+        Con_Printf("Client F exchange omitted required export %s\n", name); \
+        return false; \
+    }
+    CSE_CLIENT_REQUIRED_EXPORTS(CSE_CHECK_CLIENT_EXPORT)
+#undef CSE_CHECK_CLIENT_EXPORT
+    return true;
+}
+
+static void ReleaseOwnedClientLibrary() {
+    if (hClientDLL) {
+        Sys_UnloadModule(reinterpret_cast<CSysModule*>(hClientDLL));
+        hClientDLL = nullptr;
+    }
+    ClearOwnedClientBindings();
+    Q_memset(&cl_funcs, 0, sizeof(cl_funcs));
+    fClientLoaded = FALSE;
+}
+
 BlobFootprint_t g_blobfootprintClient;
 char g_szfullClientName[512];
 
@@ -101,20 +172,7 @@ cvar_t* GetFirstCVarPtr()
 	return cvar_vars;
 }
 
-unsigned int GetFirstCmdFunctionHandle()
-{
-	return (unsigned int)Cmd_GetFirstCmd();
-}
-
-unsigned int GetNextCmdFunctionHandle( unsigned int handle )
-{
-	return (unsigned int)( (cmd_function_t*)handle )->next;
-}
-
-const char* GetCmdFunctionName( unsigned int handle )
-{
-	return ( (cmd_function_t*)handle )->name;
-}
+#include "command_handles_impl.h"
 
 char* COM_ParseFile( char* data, char* token )
 {
@@ -450,17 +508,45 @@ void ClientDLL_CAM_Think()
 		cl_funcs.pCamThink();
 }
 
-void ClientDLL_ActivateMouse()
-{
-	if ( fClientLoaded && cl_funcs.pIN_ActivateMouse )
-		cl_funcs.pIN_ActivateMouse();
+void ClientDLL_ActivateMouse() {
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+    // Native interaction may temporarily prevent delivery of an ordinary engine request.
+    nativeClientMouseRequested = fClientLoaded && cl_funcs.pIN_ActivateMouse;
+    if (!cse::NativeMouseWindowState().CaptureAllowed()) {
+        return;
+    }
+    nativeClientMouseActive = nativeClientMouseRequested;
+#endif
+    if (fClientLoaded && cl_funcs.pIN_ActivateMouse) {
+        cl_funcs.pIN_ActivateMouse();
+    }
 }
 
-void ClientDLL_DeactivateMouse()
-{
-	if ( fClientLoaded && cl_funcs.pIN_DeactivateMouse )
-		cl_funcs.pIN_DeactivateMouse();
+void ClientDLL_DeactivateMouse() {
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+    nativeClientMouseRequested = false;
+    nativeClientMouseActive = false;
+#endif
+    if (fClientLoaded && cl_funcs.pIN_DeactivateMouse) {
+        cl_funcs.pIN_DeactivateMouse();
+    }
 }
+
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+void ClientDLL_SetNativeMouseCapture(bool active) {
+    if (active) {
+        if (nativeClientMouseRequested && !nativeClientMouseActive) {
+            ClientDLL_ActivateMouse();
+        }
+    } else {
+        // Forced release is temporary; only the original engine caller owns activation intent.
+        nativeClientMouseActive = false;
+        if (fClientLoaded && cl_funcs.pIN_DeactivateMouse) {
+            cl_funcs.pIN_DeactivateMouse();
+        }
+    }
+}
+#endif
 
 void ClientDLL_IN_Accumulate()
 {
@@ -688,20 +774,18 @@ void ClientDLL_HudInit()
 	joy_yawsensitivity = Cvar_FindVar( "joyyawsensitivity" );
 }
 
-void ClientDLL_CheckStudioInterface( HINSTANCE hModule )
-{
-	R_ResetStudio();
-
-	if ( !fClientLoaded )
-		return;
-
-	Sys_GetProcAddress( hModule, "HUD_GetStudioModelInterface" );
-	if ( cl_funcs.pStudioInterface
-		 && !cl_funcs.pStudioInterface( STUDIO_INTERFACE_VERSION, &pStudioAPI, &engine_studio_api ) )
-	{
-		Con_DPrintf( "Couldn't get client .dll studio model rendering interface.  Version mismatch?\n" );
-		R_ResetStudio();
-	}
+void ClientDLL_CheckStudioInterface(HMODULE hModule) {
+    R_ResetStudio();
+    if (!fClientLoaded) {
+        return;
+    }
+    (void)hModule;
+    if (cl_funcs.pStudioInterface && (!getOwnedClientStudio
+        || !getOwnedClientStudio(&cse::abi::EngineClientDescriptor, STUDIO_INTERFACE_VERSION,
+            &pStudioAPI, &engine_studio_api))) {
+        Con_DPrintf("Couldn't get client .dll studio model rendering interface.  Version mismatch?\n");
+        R_ResetStudio();
+    }
 }
 
 void ClientDLL_HudRedraw( int intermission )
@@ -827,31 +911,45 @@ void ClientDLL_Shutdown()
 #endif
 	}
 	hClientDLL = NULL;
+    ClearOwnedClientBindings();
 }
 
-int LoadSecureClient( char* pszDllName )
-{
-	void* hModule;
-
-	cl_funcs.pInitFunc = (INITIALIZE_FUNC)&g_modfuncs;
-	cl_funcs.pHudVidInitFunc = (HUD_VIDINIT_FUNC)&g_cldstAddrs;
-
-	hModule = NLoadBlobFile( pszDllName, &g_blobfootprintClient, &cl_funcs, 1 );
-	if ( hModule )
-	{
-		hClientDLL = (HINSTANCE)hModule;
-		fClientLoaded = TRUE;
-	}
-
-	return hModule != NULL;
+int LoadSecureClient(char* pszDllName) {
+    // This retained mode loads a normal DLL and exchanges F tables. It is not the
+    // separately excluded native raw-executable-blob mode (fLoadAsDll == 0).
+    void* library = FS_LoadLibrary(pszDllName);
+    if (!library) {
+        return 0;
+    }
+    if (!ValidateOwnedClientLibrary(library, pszDllName)) {
+        Sys_UnloadModule(static_cast<CSysModule*>(library));
+        ClearOwnedClientBindings();
+        return 0;
+    }
+    cldll_func_t functions = {};
+    functions.pInitFunc = reinterpret_cast<INITIALIZE_FUNC>(&g_modfuncs);
+    functions.pHudVidInitFunc = reinterpret_cast<HUD_VIDINIT_FUNC>(&g_cldstAddrs);
+    if (!exchangeOwnedClient(&cse::abi::EngineClientDescriptor, &functions)
+        || !ValidateOwnedClientFunctions(functions)) {
+        Sys_UnloadModule(static_cast<CSysModule*>(library));
+        ClearOwnedClientBindings();
+        return 0;
+    }
+    hClientDLL = static_cast<HMODULE>(library);
+    g_blobfootprintClient.m_hDll = static_cast<HMODULE>(library);
+    cl_funcs = functions;
+    fClientLoaded = TRUE;
+    return 1;
 }
 
 template <typename ExportFunction>
 static void ClientDLL_LoadRequiredExport( ExportFunction& func, const char* pszName )
 {
 	func = (ExportFunction)Sys_GetProcAddress( hClientDLL, pszName );
-	if ( !func )
-		Sys_Error( "could not link client.dll function %s\n", pszName );
+    if (!func) {
+        ReleaseOwnedClientLibrary();
+        Sys_Error("could not link client.dll function %s\n", pszName);
+    }
 }
 
 void LoadInsecureClient( char* pszDllName )
@@ -860,7 +958,11 @@ void LoadInsecureClient( char* pszDllName )
 	if ( !hClientDLL )
 		Sys_Error( "could not load library %s", pszDllName );
 
-	fClientLoaded = TRUE;
+    if (!ValidateOwnedClientLibrary(hClientDLL, pszDllName)) {
+        ReleaseOwnedClientLibrary();
+        Sys_Error("could not bind owned client ABI in %s", pszDllName);
+        return;
+    }
 
 	ClientDLL_LoadRequiredExport( cl_funcs.pInitFunc, "Initialize" );
 	ClientDLL_LoadRequiredExport( cl_funcs.pHudVidInitFunc, "HUD_VidInit" );
@@ -908,6 +1010,7 @@ void LoadInsecureClient( char* pszDllName )
 		(HUD_CHATINPUTPOSITION_FUNC)Sys_GetProcAddress( hClientDLL, "HUD_ChatInputPosition" );
 	cl_funcs.pClientFactory = (CLIENTFACTORY)Sys_GetProcAddress( hClientDLL, "ClientFactory" );
 	cl_funcs.pGetPlayerTeam = (HUD_GETPLAYERTEAM)Sys_GetProcAddress( hClientDLL, "HUD_GetPlayerTeam" );
+    fClientLoaded = TRUE;
 }
 
 int NCallDummy( int ijump, int cnArg, ... )
@@ -933,8 +1036,10 @@ void ClientDLL_Init()
 {
 	char szDllName[sizeof( g_szfullClientName )];
 
-#if !defined( _WIN32 )
-	strcpy( szDllName, "cl_dlls/client.so" );
+#if defined(__APPLE__)
+    strcpy(szDllName, "cl_dlls/client.dylib");
+#elif !defined(_WIN32)
+    strcpy(szDllName, "cl_dlls/client.so");
 #else
 	strcpy( szDllName, "cl_dlls\\client.dll" );
 #endif
@@ -959,7 +1064,12 @@ void ClientDLL_Init()
 	HookServerMsg( "ScreenShake", V_ScreenShake );
 	HookServerMsg( "ScreenFade", V_ScreenFade );
 
-	cl_funcs.pInitFunc( &cl_enginefuncs, CLDLL_INTERFACE_VERSION );
+    if (!initializeOwnedClient
+        || !initializeOwnedClient(&cse::abi::EngineClientDescriptor, &cl_enginefuncs, CLDLL_INTERFACE_VERSION)) {
+        ReleaseOwnedClientLibrary();
+        Sys_Error("client.dll rejected the owned engine ABI");
+        return;
+    }
 	ClientDLL_ClientMoveInit( &g_clmove );
 	CL_GetPlayerHulls();
 }
@@ -1009,14 +1119,19 @@ void hudGetMousePosition(int *mx, int *my) {
     cse::GetEngineMousePosition(*pmainwindow, mx, my);
 }
 
-void SDL_GetMousePos(POINT *ppt) {
-    int *x, *y;
+int hudGetClientMousePositionAndCenter(int *x, int *y, int *centerX, int *centerY) {
+    g_engdstAddrs.pfnGetClientMousePositionAndCenter(&x, &y, &centerX, &centerY);
+    if (!pmainwindow) {
+        return 0;
+    }
+    return cse::TryGetEngineMousePositionAndCenter(*pmainwindow, x, y, centerX, centerY) ? 1 : 0;
+}
 
-    g_engdstAddrs.pfnGetMousePos(&ppt);
-
-    x = (int *)&ppt->x;
-    y = (int *)&ppt->y;
-    cse::GetEngineMousePosition(*pmainwindow, x, y);
+void SDL_GetMousePos(tagPOINT* point) {
+    g_engdstAddrs.pfnGetMousePos(&point);
+    int* mouseX = reinterpret_cast<int*>(&point->x);
+    int* mouseY = reinterpret_cast<int*>(&point->y);
+    cse::GetEngineMousePosition(*pmainwindow, mouseX, mouseY);
 }
 
 void SDL_SetMousePos(int x, int y) {
@@ -1159,5 +1274,6 @@ cl_enginefunc_t cl_enginefuncs =
 	GetGameAppID,
 	GetAliasesList,
 	VguiWrap2_GetMouseDelta,
-	hudFilteredClientCmd
+	hudFilteredClientCmd,
+    hudGetClientMousePositionAndCenter
 };

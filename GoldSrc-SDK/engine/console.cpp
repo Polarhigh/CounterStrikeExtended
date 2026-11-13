@@ -21,7 +21,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#if defined(_WIN32)
 #include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #if defined( _WIN32 ) && !defined( SWDS_DLL )
 #include <windows.h>
@@ -209,9 +213,15 @@ void Con_DebugLog( const char* file, const char* fmt, ... )
 	va_end( argptr );
 	data[sizeof( data ) - 1] = 0;
 
+#if defined(_WIN32)
 	fd = _open( file, _O_WRONLY | _O_CREAT | _O_APPEND, 0666 );
 	_write( fd, data, (unsigned int)Q_strlen( data ) );
 	_close( fd );
+#else
+    fd = open(file, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    write(fd, data, Q_strlen(data));
+    close(fd);
+#endif
 }
 
 /*
@@ -603,8 +613,11 @@ void Con_DrawNotify()
 		scr_copytop = 1;
 
 		x = 8;
-		for ( charpos = 0; charpos < con_linewidth; charpos++ )
-			x += Draw_Character( x, v, g_szNotifyAreaString[charpos], VGUI2_GetConsoleFont() );
+        constexpr int notifyCapacity = sizeof(g_szNotifyAreaString);
+        for (charpos = 0; charpos < con_linewidth && charpos < notifyCapacity
+            && g_szNotifyAreaString[charpos] != '\0'; ++charpos) {
+            x += Draw_Character(x, v, g_szNotifyAreaString[charpos], VGUI2_GetConsoleFont());
+        }
 
 		v += VGUI2_GetFontTall( VGUI2_GetConsoleFont() );
 	}

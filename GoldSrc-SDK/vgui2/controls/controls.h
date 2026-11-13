@@ -24,8 +24,10 @@ class ISurface;
 class ISchemeManager;
 class IVGui;
 class ISystem;
+class ILocalize;
 
 bool			VGuiControls_Init( const char* moduleName, CreateInterfaceFn* factories, int count );
+void VGuiControls_Shutdown();
 char*			GetControlsModuleName();
 
 IFileSystem*	filesystem();
@@ -35,4 +37,5 @@ IInput*			input();
 ISurface*		surface();
 ISchemeManager*	scheme();
 IVGui*			ivgui();
+ILocalize* localize();
 } // namespace vgui

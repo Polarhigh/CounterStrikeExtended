@@ -1,4 +1,8 @@
+#if defined(__APPLE__)
+#include "native_mouse_window.h"
+#endif
 #include "sound.h"
+#include "sound_backend_config.h"
 #include "conprint.h"
 #include "common.h"
 #include "cvar.h"
@@ -15,9 +19,11 @@
 #include "../common/const.h"
 #include "mem.h"
 
+#if !CSE_SOUND_USE_SDL
 #include <windows.h>
 #include <mmsystem.h>
 #include <dsound.h>
+#endif
 
 #include <climits>
 #include <cstdio>
@@ -32,13 +38,17 @@ extern "C" void SNDDMA_Shutdown();
 extern "C" qboolean SNDDMA_Init();
 extern "C" void S_FreeChannel( channel_t* channel );
 extern "C" qboolean Wavstream_Init();
+#if !CSE_SOUND_USE_SDL
 extern LPDIRECTSOUNDBUFFER pDSBuf;
 extern DWORD gSndBufSize;
+#endif
 
 constexpr int SOUND_UNSIGNED_SAMPLE_BITS = 8;
 constexpr int SOUND_UNSIGNED_SILENCE = 128;
 constexpr int SOUND_BITS_PER_BYTE = 8;
+#if defined(_WIN32) || !CSE_SOUND_USE_SDL
 constexpr int SOUND_BUFFER_LOCK_RETRIES = 10000;
+#endif
 
 volatile dma_t* shm;
 volatile dma_t sn;
@@ -137,10 +147,29 @@ extern "C" void S_Shutdown()
 
 extern "C" void S_ClearBuffer()
 {
-	if ( !sound_started || !shm || ( !shm->buffer && !pDSBuf ) )
-		return;
+    if (!sound_started || !shm) {
+        return;
+    }
+#if CSE_SOUND_USE_SDL
+    if (!shm->buffer) {
+        return;
+    }
+#else
+    if (!shm->buffer && !pDSBuf) {
+        return;
+    }
+#endif
 
 	int clear = shm->samplebits == SOUND_UNSIGNED_SAMPLE_BITS ? SOUND_UNSIGNED_SILENCE : 0;
+#if CSE_SOUND_USE_SDL
+    if (!SNDDMA_LockBuffer()) {
+        Con_Printf("S_ClearBuffer: SDL::Lock Sound Buffer Failed\n");
+        S_Shutdown();
+        return;
+    }
+    Q_memset(shm->buffer, clear, shm->samplebits * shm->samples / SOUND_BITS_PER_BYTE);
+    SNDDMA_UnlockBuffer();
+#else
 	if ( pDSBuf )
 	{
 		void* data;
@@ -171,6 +200,7 @@ extern "C" void S_ClearBuffer()
 	{
 		Q_memset( shm->buffer, clear, shm->samplebits * shm->samples / SOUND_BITS_PER_BYTE );
 	}
+#endif
 }
 
 void S_StopAllSounds( qboolean clear )
@@ -702,6 +732,14 @@ extern "C" time_t timeGetTime()
 }
 #endif
 
+static std::uint32_t SoundProfileMilliseconds() {
+#if CSE_SOUND_USE_SDL
+    return static_cast<std::uint32_t>(SDL_GetTicks());
+#else
+    return timeGetTime();
+#endif
+}
+
 void S_Say()
 {
 	static int hash = SOUND_SAY_PROFILE_ENTITY_SEED;
@@ -720,10 +758,10 @@ void S_Say()
 			paintbuffer[index].right = RandomLong( 0, SOUND_DSP_PROFILE_RANDOM_MAX );
 		}
 		Con_Printf( "Start profiling 10,000 calls to DSP\n" );
-		DWORD start = timeGetTime();
+		const std::uint32_t start = SoundProfileMilliseconds();
 		for ( int index = 0; index < SOUND_DSP_PROFILE_ITERATIONS; ++index )
 			SX_RoomFX( SOUND_DSP_PROFILE_SAMPLES, 1, 1 );
-		Con_Printf( "%d milliseconds \n", static_cast<int>( timeGetTime() - start ) );
+		Con_Printf( "%d milliseconds \n", static_cast<int>(SoundProfileMilliseconds() - start) );
 		return;
 	}
 	if ( !Q_strcmp( name, "paint" ) )
@@ -732,9 +770,9 @@ void S_Say()
 		Con_Printf( "Start profiling S_PaintChannels\n" );
 		sfx_t* sound = S_PrecacheSound( const_cast<char*>( "ambience/labdrone1.wav" ) );
 		S_StartDynamicSound( hash++, CHAN_AUTO, sound, listener_origin, VOL_NORM, 1.0f, 0, PITCH_NORM );
-		DWORD start = timeGetTime();
+		const std::uint32_t start = SoundProfileMilliseconds();
 		S_PaintChannels( paintedtime + SOUND_PAINT_PROFILE_SAMPLES );
-		Con_Printf( "%d milliseconds \n", static_cast<int>( timeGetTime() - start ) );
+		Con_Printf( "%d milliseconds \n", static_cast<int>(SoundProfileMilliseconds() - start) );
 		paintedtime = previousPaintedTime;
 		return;
 	}
@@ -821,8 +859,14 @@ void S_ExtraUpdate()
 {
 	if ( !VGuiWrap2_IsGameUIVisible() )
 	{
-		SDL_PumpEvents();
-		ClientDLL_IN_Accumulate();
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+        if (cse::RefreshNativeGameplayShortcuts()) {
+            SDL_PumpEvents();
+        }
+#else
+        SDL_PumpEvents();
+#endif
+        ClientDLL_IN_Accumulate();
 	}
 	if ( snd_noextraupdate.value == 0.0f )
 		S_Update_();
@@ -1001,6 +1045,11 @@ constexpr int SOUND_TIME_RESET_LIMIT = 0x40000000;
 #endif
 void GetSoundtime()
 {
+#if !defined(_WIN32)
+    if (!shm) {
+        return;
+    }
+#endif
 	int fullSamples;
 	if ( shm )
 		fullSamples = shm->samples / shm->channels;
@@ -1030,7 +1079,13 @@ void S_Update_()
 // been played out of the dma buffer since sound system startup.
 
 	GetSoundtime();
+#if defined(_WIN32)
 	if ( shm )
+#else
+    if (!shm) {
+        return;
+    }
+#endif
 	{
 		endtime = static_cast<int>(
 			static_cast<float>( soundtime ) + static_cast<float>( shm->dmaspeed ) * _snd_mixahead.value );
@@ -1039,6 +1094,7 @@ void S_Update_()
 	if ( endtime - soundtime > bufferSamples )
 		endtime = soundtime + bufferSamples;
 
+#if !CSE_SOUND_USE_SDL
 	if ( pDSBuf )
 	{
 		DWORD status;
@@ -1049,6 +1105,7 @@ void S_Update_()
 		if ( !( status & DSBSTATUS_PLAYING ) )
 			pDSBuf->Play( 0, 0, DSBPLAY_LOOPING );
 	}
+#endif
 	S_PaintChannels( static_cast<int>( static_cast<unsigned int>( endtime ) >> 1 ) );
 	SNDDMA_Submit();
 }

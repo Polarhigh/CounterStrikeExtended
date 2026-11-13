@@ -26,11 +26,13 @@
 #endif
 
 // Silence certain warnings
+#if defined(_MSC_VER)
 #pragma warning(disable : 4244)		// int or float down-conversion
 #pragma warning(disable : 4305)		// int or float data truncation
 #pragma warning(disable : 4201)		// nameless struct/union
 #pragma warning(disable : 4514)		// unreferenced inline function removed
 #pragma warning(disable : 4100)		// unreferenced formal parameter
+#endif
 
 #include "archtypes.h"     // DAL
 
@@ -45,6 +47,7 @@
 #include "windows.h"
 #include "winsani_out.h"
 #else // _WIN32
+#include "cse_posix_crt.h"
 #define FALSE 0
 #define TRUE (!FALSE)
 typedef uint32 ULONG;
@@ -56,7 +59,6 @@ typedef int BOOL;
 #include <string.h> // memset 
 #ifndef max
 #define max(a,b)  (((a) > (b)) ? (a) : (b))
-#define _vsnprintf(a,b,c,d) vsnprintf(a,b,c,d)
 #endif
 #endif //_WIN32
 
@@ -64,14 +66,11 @@ typedef int BOOL;
 #include "stdio.h"
 #include "stdlib.h"
 #include "minmax.h"
-#ifndef _WIN32
-# define _vsnprintf(a,b,c,d) vsnprintf(a,b,c,d)
-#endif
 #include "math.h"
 
 // Header file containing definition of globalvars_t and entvars_t
 typedef unsigned int func_t;					//
-typedef unsigned int string_t;				// from engine's pr_comp.h;
+#include "cse_string.h"
 typedef float vec_t;				// needed before including progdefs.h
 
 // Vector class

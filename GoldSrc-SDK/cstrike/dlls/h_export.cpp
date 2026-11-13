@@ -22,6 +22,9 @@
 
 #include "extdll.h"
 #include "util.h"
+#include "cbase.h"
+#include "game_saved_callbacks.h"
+#include "game_module_entry.h"
 
 // Holds engine functionality callbacks
 enginefuncs_t g_engfuncs;
@@ -33,6 +36,14 @@ extern "C" void __stdcall GiveFnptrsToDll( enginefuncs_t* functions, globalvars_
 extern "C" __attribute__(( visibility( "default" ) )) void GiveFnptrsToDll( enginefuncs_t* functions, globalvars_t* globals )
 #endif
 {
+    if (!CseGameConsumeEngineExchangeAuthorization()) {
+        return;
+    }
+
 	memcpy( &g_engfuncs, functions, sizeof( g_engfuncs ) );
 	gpGlobals = globals;
+    if (!CseInitializeSavedCallbacks()) {
+        ALERT(at_error, "Cannot initialize typed save callback catalog\n");
+        abort();
+    }
 }

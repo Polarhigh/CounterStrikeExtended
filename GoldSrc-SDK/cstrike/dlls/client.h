@@ -16,6 +16,7 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
+#include "../../public/cse_export.h"
 #include "weapontype.h"
 #include "player.h"
 
@@ -75,8 +76,8 @@ void DropPrimary( CBasePlayer* player );
 void Radio1( CBasePlayer* player, int slot );
 void Radio2( CBasePlayer* player, int slot );
 void Radio3( CBasePlayer* player, int slot );
-void ShowMenu( CBasePlayer* player, int slots, int time, BOOL more, char* text );
-void ShowVGUIMenu( CBasePlayer* player, int menu, int slots, char* text );
+void ShowMenu( CBasePlayer* player, int slots, int time, BOOL more, const char* text );
+void ShowVGUIMenu( CBasePlayer* player, int menu, int slots, const char* text );
 void ListPlayers( CBasePlayer* player );
 CBaseEntity* EntityFromUserID( int userID );
 int CountPlayersInServer();
@@ -92,8 +93,13 @@ void BlinkAccount( CBasePlayer* player, int count );
 
 extern "C"
 {
+#if defined(__APPLE__)
+    CSE_PUBLIC_EXPORT int CountTeams();
+    CSE_PUBLIC_EXPORT int CountTeamPlayers(int team);
+#else
 	int CountTeams();
 	int CountTeamPlayers( int team );
+#endif
 	int Q_strlen( const char* string );
 }
 

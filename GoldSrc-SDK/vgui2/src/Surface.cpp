@@ -28,6 +28,9 @@
 #include "utlvector.h"
 #include "../vgui_surfacelib/FontManager.h"
 #include "../vgui_surfacelib/LinuxFont.h"
+#if defined(__APPLE__)
+#include "../vgui_surfacelib/native/MacFontRegistration.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +42,7 @@
 #include <ole2.h>
 #include <shellapi.h>
 #include <mmsystem.h>
+#include "window_panel_handle.h"
 
 #undef CreateFont
 #undef PlaySound
@@ -596,7 +600,7 @@ static LRESULT CALLBACK staticProc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
 
 	if ( staticSurfaceAvailable )
 	{
-		panel = g_pIVgui->HandleToPanel( GetWindowLongA( hwnd, GWL_USERDATA ) );
+		panel = g_pIVgui->HandleToPanel( ReadWindowPanelHandle(hwnd) );
 		if ( panel )
 		{
 			client = ( (VPanel*)panel )->Client();
@@ -1158,10 +1162,14 @@ void CWin32Surface::Shutdown()
 
 	FontManager().ClearAllFonts();
 
+#if defined(__APPLE__)
+    cse::fonts::ReleaseMacCustomFonts(this);
+#else
 	for ( int i = 0; i < m_CustomFontFileNames.Count(); i++ )
 	{
 		RemoveFontResourceExA( m_CustomFontFileNames[i].String(), FR_PRIVATE, NULL );
 	}
+#endif
 
 	m_CustomFontFileNames.RemoveAll();
 
@@ -1216,6 +1224,19 @@ VPANEL CWin32Surface::GetEmbeddedPanel()
 
 void CWin32Surface::SetEmbeddedPanel( VPANEL pEmbeddedPanel )
 {
+#if INTPTR_MAX > INT32_MAX
+    if (!pEmbeddedPanel) {
+        // Native owners detach before destroying their root panel. Keep popup and
+        // platform ownership in ReleasePanel; a null root cannot create a popup.
+        const VPANEL previousEmbeddedPanel = _embeddedPanel;
+        _embeddedPanel = 0;
+        if (_currentContextPanel == previousEmbeddedPanel) {
+            SetContextPanel(0);
+        }
+        staticSurfaceAvailable = 0;
+        return;
+    }
+#endif
 	staticSurfaceAvailable = 1;
 	_embeddedPanel = pEmbeddedPanel;
 	SetContextPanel( pEmbeddedPanel );
@@ -2311,7 +2332,7 @@ void CWin32Surface::CreatePopup( VPANEL panel, bool minimized, bool showTaskbarI
 	plat->textureDC = NULL;
 
 	SetBkMode( plat->hdc, TRANSPARENT );
-	SetWindowLongA( plat->hwnd, GWL_USERDATA, (LONG)g_pIVgui->PanelToHandle( panel ) );
+	WriteWindowPanelHandle(plat->hwnd, g_pIVgui->PanelToHandle(panel));
 	SetTextAlign( plat->hdc, TA_UPDATECP );
 
 	if ( !popup->IsVisible() || panel == _embeddedPanel )
@@ -2622,11 +2643,15 @@ bool CWin32Surface::AddGlyphSetToFont( HFont font, const char* windowsFontName, 
 
 bool CWin32Surface::AddCustomFontFile( const char* fontFileName )
 {
+#if defined(__APPLE__)
+    return cse::fonts::RegisterMacCustomFontFile(this, g_pFileSystem, fontFileName);
+#else
 	char fullPath[MAX_PATH];
 	g_pFileSystem->GetLocalPath( fontFileName, fullPath, sizeof( fullPath ) );
 	m_CustomFontFileNames.AddToTail( CUtlSymbol( fontFileName ) );
 
 	return AddFontResourceExA( fullPath, FR_PRIVATE, NULL ) > 0 || AddFontResourceA( fullPath ) > 0;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -2877,7 +2902,7 @@ void CWin32Surface::ReleasePanel( VPANEL panel )
 
 	// hide the panel
 	SetPanelVisible( panel, false );
-	SetWindowLongA( plat->hwnd, GWL_USERDATA, -1 );
+	WriteWindowPanelHandle(plat->hwnd, static_cast<HPanel>(-1));
 	SetWindowPos( plat->hwnd, HWND_BOTTOM, 0, 0, 1, 1, SWP_NOREDRAW | SWP_HIDEWINDOW );
 
 	// free the window context

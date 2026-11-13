@@ -1,9 +1,24 @@
+#include <cstdint>
 #include "HLTV/common/InfoString.h"
 
 #include "HLTV/common/mem.h"
 
+#include <climits>
+#include <cstddef>
 #include <stdlib.h>
 #include <string.h>
+
+namespace {
+
+unsigned int InfoStringCapacity(std::size_t length, unsigned int minimum) {
+    if (length >= static_cast<std::size_t>(INT_MAX) || minimum > static_cast<unsigned int>(INT_MAX)) {
+        return 0;
+    }
+    const std::size_t required = length + 1;
+    return static_cast<unsigned int>(required < minimum ? minimum : required);
+}
+
+} // namespace
 
 InfoString::InfoString()
 {
@@ -20,13 +35,14 @@ InfoString::InfoString( unsigned int maxSize )
 
 InfoString::InfoString( char* string )
 {
-	unsigned int size;
+    constexpr unsigned int DefaultCapacity = 256;
+    m_String = NULL;
+    m_MaxSize = 0;
 
-	m_String = NULL;
-	m_MaxSize = 0;
-	size = strlen( string ) + 1;
-	if ( size <= 255 )
-		size = 256;
+    const unsigned int size = InfoStringCapacity(strlen(string), DefaultCapacity);
+    if (size == 0) {
+        return;
+    }
 
 	SetMaxSize( size );
 	SetString( string );
@@ -34,13 +50,13 @@ InfoString::InfoString( char* string )
 
 InfoString::InfoString( char* string, unsigned int maxSize )
 {
-	unsigned int size;
+    m_String = NULL;
+    m_MaxSize = 0;
 
-	m_String = NULL;
-	m_MaxSize = 0;
-	size = strlen( string ) + 1;
-	if ( size < maxSize )
-		size = maxSize;
+    const unsigned int size = InfoStringCapacity(strlen(string), maxSize);
+    if (size == 0) {
+        return;
+    }
 
 	SetMaxSize( size );
 	SetString( string );
@@ -69,6 +85,9 @@ bool InfoString::SetString( char* string )
 
 void InfoString::SetMaxSize( unsigned int maxSize )
 {
+    if (maxSize > static_cast<unsigned int>(INT_MAX)) {
+        return;
+    }
 	char* buf;
 	char* old;
 
@@ -85,7 +104,7 @@ void InfoString::SetMaxSize( unsigned int maxSize )
 		free( old );
 	}
 
-	m_MaxSize = maxSize;
+    m_MaxSize = static_cast<int>(maxSize);
 	m_String = buf;
 }
 
@@ -231,7 +250,12 @@ bool InfoString::RemoveKey( const char* key )
 		*dst = 0;
 		if ( !strcmp( key, pkey ) )
 		{
+#if INTPTR_MAX > INT32_MAX
+            // Removing a key shifts the remaining suffix within this same buffer.
+            memmove(start, s, strlen(s) + 1);
+#else
 			strcpy( start, s );
+#endif
 			return true;
 		}
 
@@ -349,8 +373,12 @@ bool InfoString::SetValueForStarKey( const char* key, const char* value )
 	strcat( newtoken, "\\" );
 	strcat( newtoken, value );
 
-	if ( (int)( strlen( m_String ) + strlen( newtoken ) ) >= m_MaxSize )
-		return false;
+    const std::size_t currentLength = strlen(m_String);
+    const std::size_t tokenLength = strlen(newtoken);
+    if (currentLength >= static_cast<std::size_t>(m_MaxSize)
+        || tokenLength >= static_cast<std::size_t>(m_MaxSize) - currentLength) {
+        return false;
+    }
 
 	dst = m_String + strlen( m_String );
 	v = newtoken;

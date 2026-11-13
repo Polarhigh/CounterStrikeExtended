@@ -227,9 +227,10 @@ typedef struct clc_func_s
 	void ( *pfnParse )( client_t* );
 } clc_func_t;
 
-static_assert( sizeof( clc_func_t ) == 12 );
-static_assert( offsetof( clc_func_t, pszname ) == 4 );
-static_assert( offsetof( clc_func_t, pfnParse ) == 8 );
+// This dispatch table is process-local; command opcodes retain their fixed protocol encoding.
+static_assert(sizeof(void*) != 4 || sizeof(clc_func_t) == 12);
+static_assert(sizeof(void*) != 4 || offsetof(clc_func_t, pszname) == 4);
+static_assert(sizeof(void*) != 4 || offsetof(clc_func_t, pfnParse) == 8);
 
 void SV_ParseMove( client_t* sender );
 void SV_ParseResourceList( client_t* );
@@ -1130,7 +1131,7 @@ void SV_CopyEdictToPhysent( physent_t* physent, int index, edict_t* entity )
 			else
 			{
 				if ( entity->v.classname )
-					Q_strncpy( physent->name, pr_strings + entity->v.classname, sizeof( physent->name ) );
+					Q_strncpy( physent->name, CseStringAddress(pr_strings, entity->v.classname), sizeof( physent->name ) );
 				else
 					Q_strcpy( physent->name, "?" );
 				physent->name[sizeof( physent->name ) - 1] = '\0';

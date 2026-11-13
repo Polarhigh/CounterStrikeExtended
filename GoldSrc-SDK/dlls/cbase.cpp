@@ -15,6 +15,7 @@
 #include	"extdll.h"
 #include	"util.h"
 #include	"cbase.h"
+#include "game_module_entry.h"
 #include	"saverestore.h"
 #include	"client.h"
 #include	"decals.h"
@@ -101,6 +102,10 @@ extern "C" {
 
 	int GetEntityAPI( DLL_FUNCTIONS *pFunctionTable, int interfaceVersion )
 {
+    if (!CseGameEngineAbiBound()) {
+        return FALSE;
+    }
+
 	if ( !pFunctionTable || interfaceVersion != INTERFACE_VERSION )
 	{
 		return FALSE;
@@ -112,6 +117,10 @@ extern "C" {
 
 int GetEntityAPI2( DLL_FUNCTIONS *pFunctionTable, int *interfaceVersion )
 {
+    if (!CseGameEngineAbiBound()) {
+        return FALSE;
+    }
+
 	if ( !pFunctionTable || *interfaceVersion != INTERFACE_VERSION )
 	{
 		// Tell engine what version we had, so it can figure out who is out of date.
@@ -340,8 +349,7 @@ int DispatchRestore( edict_t *pent, SAVERESTOREDATA *pSaveData, int globalEntity
 				pSaveData->vecLandmarkOffset = (pSaveData->vecLandmarkOffset - pNewEntity->pev->mins) + tmpVars.mins;
 				pEntity = pNewEntity;// we're going to restore this data OVER the old entity
 				pent = ENT( pEntity->pev );
-				// Update the global table to say that the global definition of this entity should come from this level
-				gGlobalState.EntityUpdate( pEntity->pev->globalname, gpGlobals->mapname );
+
 			}
 			else
 			{
@@ -352,16 +360,26 @@ int DispatchRestore( edict_t *pent, SAVERESTOREDATA *pSaveData, int globalEntity
 
 		}
 
-		if ( pEntity->ObjectCaps() & FCAP_MUST_SPAWN )
-		{
-			pEntity->Restore( restoreHelper );
-			pEntity->Spawn();
-		}
-		else
-		{
-			pEntity->Restore( restoreHelper );
-			pEntity->Precache( );
-		}
+        const bool mustSpawn = (pEntity->ObjectCaps() & FCAP_MUST_SPAWN) != 0;
+        if (!pEntity->Restore(restoreHelper)) {
+            if (globalEntity) {
+                pSaveData->vecLandmarkOffset = oldOffset;
+                // The engine frees only the temporary source after an overlay. Remove
+                // the failed destination without marking the previous global record dead.
+                pEntity->pev->globalname = 0;
+                pEntity->UpdateOnRemove();
+                REMOVE_ENTITY(pent);
+            }
+            return -1;
+        }
+        if (globalEntity) {
+            gGlobalState.EntityUpdate(pEntity->pev->globalname, gpGlobals->mapname);
+        }
+        if (mustSpawn) {
+            pEntity->Spawn();
+        } else {
+            pEntity->Precache();
+        }
 
 		// Again, could be deleted, get the pointer again.
 		pEntity = (CBaseEntity *)GET_PRIVATE(pent);
@@ -436,16 +454,11 @@ void SaveReadFields( SAVERESTOREDATA *pSaveData, const char *pname, void *pBaseD
 }
 
 
-edict_t * EHANDLE::Get( void ) 
-{ 
-	if (m_pent)
-	{
-		if (m_pent->serialnumber == m_serialnumber) 
-			return m_pent; 
-		else
-			return NULL;
-	}
-	return NULL; 
+edict_t *EHANDLE::Get() const {
+    if (m_pent && m_pent->serialnumber == m_serialnumber) {
+        return m_pent;
+    }
+    return nullptr;
 };
 
 edict_t * EHANDLE::Set( edict_t *pent ) 
@@ -584,6 +597,8 @@ CBaseEntity *CBaseEntity::GetNextTarget( void )
 TYPEDESCRIPTION	CBaseEntity::m_SaveData[] = 
 {
 	DEFINE_FIELD( CBaseEntity, m_pGoalEnt, FIELD_CLASSPTR ),
+    DEFINE_FIELD(CBaseEntity, m_worldMapTeams, FIELD_STRING),
+    DEFINE_FIELD(CBaseEntity, m_worldMapTeamsKnown, FIELD_BOOLEAN),
 
 	DEFINE_FIELD( CBaseEntity, m_pfnThink, FIELD_FUNCTION ),		// UNDONE: Build table of these!!!
 	DEFINE_FIELD( CBaseEntity, m_pfnTouch, FIELD_FUNCTION ),

@@ -718,7 +718,7 @@ enum
 
 
 typedef unsigned int	func_t;
-typedef unsigned int	string_t;
+#include "cse_string.h"
 
 typedef unsigned char 		byte;
 typedef unsigned short 		word;
@@ -726,6 +726,18 @@ typedef unsigned short 		word;
 
 #undef true
 #undef false
+
+#if !defined(_WIN32)
+#ifndef ARRAYSIZE
+#define ARRAYSIZE(array) (sizeof(array) / sizeof((array)[0]))
+#endif
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
+#endif
 
 #ifndef __cplusplus
 typedef enum {false, true}	qboolean;

@@ -2,6 +2,9 @@
 #include "../common/dll_state.h"
 #include "gl_model.h"
 #include "host_cmd.h"
+#if defined(__APPLE__)
+#include "native_video_restart.h"
+#endif
 #include "world.h"
 #include "registry.h"
 #include "pr_dlls.h"
@@ -33,8 +36,10 @@
 #include "filesystem.h"
 #include "eiface.h"
 
+#if defined(_WIN32)
 #include <Windows.h>
 #include <intrin.h>
+#endif
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -44,7 +49,14 @@
 #include <cstdarg>
 #include <cmath>
 #include <climits>
+#if defined(_WIN32)
 #include <io.h>
+#else
+#include "posix_process_stats.h"
+#include "../common/legacy_text_to_integer.h"
+#include <unistd.h>
+#define _unlink unlink
+#endif
 
 #if !defined( _WIN32 )
 #define _snprintf snprintf
@@ -71,6 +83,14 @@ double cpuPercent;
 int startTime;
 int g_iQuitCommandIssued;
 char* g_pPostRestartCmdLineArgs;
+
+#if defined(__APPLE__)
+static cse_restart::VideoSettings nativeVideoRestart;
+
+void Host_ResetNativeVideoRestart() {
+    nativeVideoRestart.Reset();
+}
+#endif
 
 CareerStateType g_careerState;
 qboolean g_bMajorMapChange;
@@ -120,7 +140,7 @@ void NotifyDedicatedServerUI( const char* message );
 extern "C" void VideoMode_SwitchMode( int hardware, int windowed );
 extern "C" void VideoMode_SetVideoMode( int width, int height, int bitsPerPixel );
 int DecalListCreate( DECALLIST* decals );
-edict_t* CreateNamedEntity( int classname );
+edict_t* CreateNamedEntity( string_t classname );
 int PF_IsMapValid_I( char* mapname );
 int PF_IsDedicatedServer();
 void PF_MessageBegin_I( int destination, int type, const float* origin, edict_t* entity );
@@ -145,6 +165,14 @@ void Host_ClearGameState();
 void Host_InitializeGameDLL();
 void Host_Map( qboolean bIsDemo, char* mapstring, char* mapName, qboolean loadGame );
 int __cdecl Host_Load( const char* name );
+namespace {
+enum class HostLoadFailurePolicy {
+    Disconnect,
+    ReloadFallback
+};
+
+int Host_LoadWithFailurePolicy(const char *name, HostLoadFailurePolicy failurePolicy);
+} // namespace
 int Host_ValidSave();
 void FileCopy( FileHandle_t output, FileHandle_t input, int fileSize );
 int FileSize( FileHandle_t file );
@@ -437,21 +465,41 @@ void Host_Quit_f()
 
 void Host_Quit_Restart_f()
 {
+#if defined(__APPLE__)
+    std::string resumeCommands;
+#endif
 	giActive = 5;
 	giStateInfo = DLL_QUIT;
 
 	if ( !sv.active && cls.state == ca_active && cls.trueaddress[0] && g_pPostRestartCmdLineArgs )
 	{
+#if defined(__APPLE__)
+        resumeCommands = " +connect ";
+        resumeCommands += cls.servername;
+#else
 		strcat( g_pPostRestartCmdLineArgs, " +connect " );
 		strcat( g_pPostRestartCmdLineArgs, cls.servername );
+#endif
 	}
 
 	if ( sv.active && svs.maxclients == 1 && cls.state == ca_active && g_pPostRestartCmdLineArgs )
 	{
 		Cbuf_AddText( "save quick\n" );
 		Cbuf_Execute();
+#if defined(__APPLE__)
+        resumeCommands += " +load quick";
+#else
 		strcat( g_pPostRestartCmdLineArgs, " +load quick" );
+#endif
 	}
+
+#if defined(__APPLE__)
+    if (!nativeVideoRestart.Append(g_pPostRestartCmdLineArgs, cse_restart::GeneratedCommandCapacity,
+        resumeCommands)) {
+        Sys_Error("Native restart command exceeds launcher capacity");
+        return;
+    }
+#endif
 
 	if ( Host_IsServerActive() )
 		Host_ShutdownServer( FALSE );
@@ -462,6 +510,7 @@ void Host_Quit_Restart_f()
 	Cache_Force_Flush();
 }
 
+#if defined(_WIN32)
 static uint64_t Host_FileTimeTicks( const FILETIME& time )
 {
 	ULARGE_INTEGER ticks;
@@ -470,105 +519,10 @@ static uint64_t Host_FileTimeTicks( const FILETIME& time )
 	ticks.HighPart = time.dwHighDateTime;
 	return ticks.QuadPart;
 }
-
-#ifndef _WIN32
-static bool Host_ReadProcCpuTicks( uint64_t& cpuTicks, uint64_t& runTicks )
-{
-	char path[64];
-	char line[4096];
-	char* p;
-	char* token;
-	char* end;
-	int field;
-	unsigned long long value;
-	unsigned long long utime = 0;
-	unsigned long long stime = 0;
-	unsigned long long starttime = 0;
-	long uptime = 0;
-	int matched;
-	FILE* f;
-
-	snprintf( path, sizeof( path ) - 1, "/proc/%i/stat", (int)GetCurrentProcessId() );
-	path[sizeof( path ) - 1] = '\0';
-
-	f = fopen( path, "r" );
-	if ( !f )
-		return false;
-	p = fgets( line, sizeof( line ), f );
-	fclose( f );
-	if ( !p )
-		return false;
-
-	p = strrchr( line, ')' );
-	if ( !p )
-		return false;
-	p++;
-
-	for ( field = 0; *p && field <= 19; field++ )
-	{
-		while ( *p == ' ' || *p == '\t' )
-			p++;
-		if ( *p == '\0' || *p == '\n' )
-			break;
-
-		token = p;
-		while ( *p && *p != ' ' && *p != '\t' && *p != '\n' )
-			p++;
-
-		if ( field == 11 || field == 12 || field == 19 )
-		{
-			end = NULL;
-			value = strtoull( token, &end, 10 );
-			if ( end == token )
-				return false;
-
-			if ( field == 11 )
-				utime = value;
-			else if ( field == 12 )
-				stime = value;
-			else
-				starttime = value;
-		}
-	}
-
-	if ( field <= 19 )
-		return false;
-
-	f = fopen( "/proc/uptime", "r" );
-	if ( !f )
-		return false;
-	matched = fscanf( f, "%ld", &uptime );
-	fclose( f );
-	if ( matched != 1 )
-		return false;
-
-	cpuTicks = utime + stime;
-	runTicks = (uint64_t)( 100 * (int64_t)uptime - (int64_t)starttime );
-	return true;
+#else
+static bool Host_ReadProcessCpuTicks(uint64_t& cpuTicks, uint64_t& runTicks) {
+    return cse_process_stats::Read(cpuTicks, runTicks);
 }
-
-static bool Host_ReadProcessCpuTicks( uint64_t& cpuTicks, uint64_t& runTicks )
-{
-	FILETIME creationTime;
-	FILETIME exitTime;
-	FILETIME kernelTime;
-	FILETIME userTime;
-	FILETIME systemTime;
-
-	if ( !GetProcessTimes( GetCurrentProcess(), &creationTime, &exitTime, &kernelTime, &userTime ) )
-		return false;
-	GetSystemTimeAsFileTime( &systemTime );
-
-	uint64_t now = Host_FileTimeTicks( systemTime );
-	uint64_t started = Host_FileTimeTicks( creationTime );
-	if ( now < started )
-		return false;
-
-	cpuTicks = Host_FileTimeTicks( userTime ) + Host_FileTimeTicks( kernelTime );
-	runTicks = now - started;
-	return true;
-}
-
 #endif
 
 void Host_UpdateStats()
@@ -612,7 +566,7 @@ void Host_UpdateStats()
 			lastAvg = last;
 		}
 #else
-		if ( Host_ReadProcCpuTicks( cputicks, runticks ) || Host_ReadProcessCpuTicks( cputicks, runticks ) )
+		if (Host_ReadProcessCpuTicks(cputicks, runticks))
 		{
 			if ( !lastcputicks )
 				lastcputicks = cputicks;
@@ -1135,9 +1089,9 @@ void Host_TogglePause_f()
 		sv.paused ^= 1;
 
 		if ( sv.paused )
-			SV_BroadcastPrintf( "%s paused the game\n", pr_strings + sv_player->v.netname );
+			SV_BroadcastPrintf( "%s paused the game\n", CseStringAddress(pr_strings, sv_player->v.netname) );
 		else
-			SV_BroadcastPrintf( "%s unpaused the game\n", pr_strings + sv_player->v.netname );
+			SV_BroadcastPrintf( "%s unpaused the game\n", CseStringAddress(pr_strings, sv_player->v.netname) );
 
 		// send notification to all clients
 		MSG_WriteByte( &sv.reliable_datagram, svc_setpause );
@@ -1383,12 +1337,13 @@ void Host_Reload_f()
 	SV_ServerShutdown();
 
 	pSaveName = Host_FindRecentSave( name, sizeof( name ) );
-	if ( !pSaveName || !Host_Load( pSaveName ) )
-	{
-		SV_SpawnServer( FALSE, gHostMap.string, NULL );
-		SV_LoadEntities();
-		SV_ActivateServer( 1 );
-	}
+    // Game rules execute queued commands during spawn; reload must own recovery without a deferred disconnect.
+    if (!pSaveName || !Host_LoadWithFailurePolicy(pSaveName, HostLoadFailurePolicy::ReloadFallback)) {
+        if (SV_SpawnServer(FALSE, gHostMap.string, NULL)) {
+            SV_LoadEntities();
+            SV_ActivateServer(1);
+        }
+    }
 }
 
 void Host_Motd_f()
@@ -1491,13 +1446,14 @@ void Host_Motd_Write_f()
 	Con_Printf( "Done.\n" );
 }
 
-int __cdecl Host_Load( const char* pName )
-{
+#include "save_archive_impl.h"
+
+namespace {
+int Host_LoadWithFailurePolicy(const char *pName, HostLoadFailurePolicy failurePolicy) {
 	char name[256];
 	GAME_HEADER gameHeader;
 	FileHandle_t pFile;
 	const char* pszExt;
-	int i;
 
 	if ( !pName || !pName[0] )
 		return 0;
@@ -1516,12 +1472,22 @@ int __cdecl Host_Load( const char* pName )
 
 		while ( *p && isdigit( (signed char)*p ) )
 		{
-			if ( digits == (int)sizeof( number ) )
-				__fastfail( FAST_FAIL_RANGE_CHECK_FAILURE );
+            if (digits == static_cast<int>(sizeof(number))) {
+#if defined(_WIN32)
+                __fastfail(FAST_FAIL_RANGE_CHECK_FAILURE);
+#else
+                std::abort();
+#endif
+            }
 			number[digits++] = *p++;
 		}
-		if ( digits == (int)sizeof( number ) )
-			__fastfail( FAST_FAIL_RANGE_CHECK_FAILURE );
+        if (digits == static_cast<int>(sizeof(number))) {
+#if defined(_WIN32)
+            __fastfail(FAST_FAIL_RANGE_CHECK_FAILURE);
+#else
+            std::abort();
+#endif
+        }
 		number[digits] = '\0';
 
 		int slot = Q_atoi( number );
@@ -1557,8 +1523,10 @@ int __cdecl Host_Load( const char* pName )
 
 	if ( !SaveReadHeader( pFile, &gameHeader, 1 ) )
 	{
-		giStateInfo = STATE_ENDTRAINING;
-		Cbuf_AddText( "\ndisconnect\n" );
+        if (failurePolicy == HostLoadFailurePolicy::Disconnect) {
+            giStateInfo = STATE_ENDTRAINING;
+            Cbuf_AddText("\ndisconnect\n");
+        }
 		return 0;
 	}
 
@@ -1566,33 +1534,16 @@ int __cdecl Host_Load( const char* pName )
 	SV_InactivateClients();
 	SCR_BeginLoadingPlaque( FALSE );
 
-	for ( i = 0; i < gameHeader.mapCount; i++ )
-	{
-		char fileName[MAX_PATH];
-		int fileSize;
-
-		FS_Read( fileName, sizeof( fileName ), 1, pFile );
-		fileName[sizeof( fileName ) - 1] = '\0';
-		FS_Read( &fileSize, sizeof( fileSize ), 1, pFile );
-
-		pszExt = COM_FileExtension( fileName );
-		if ( !pszExt || Q_strstr( fileName, "\\" ) || Q_strstr( fileName, ":" ) || Q_strstr( fileName, ".." )
-			 || Q_strstr( fileName, "~" ) || fileName[0] == '/' || pszExt[0] != 'H' || pszExt[1] != 'L' )
-		{
-			FS_Seek( pFile, fileSize, FILESYSTEM_SEEK_CURRENT );
-		}
-		else
-		{
-			char szPath[MAX_PATH];
-
-			_snprintf( szPath, sizeof( szPath ), "%s%s", Host_SaveGameDirectory(), fileName );
-			COM_FixSlashes( szPath );
-
-			FileHandle_t pCopy = FS_OpenPathID( szPath, "wb", "GAMECONFIG" );
-			FileCopy( pCopy, pFile, fileSize );
-			FS_Close( pCopy );
-		}
-	}
+    cse::save_archive::Layout archiveLayout{};
+    if (!cse::save_archive::ReadLayout(pFile, gameHeader.mapCount, archiveLayout)
+        || !cse::save_archive::Extract(pFile, archiveLayout)) {
+        FS_Close(pFile);
+        if (failurePolicy == HostLoadFailurePolicy::Disconnect) {
+            giStateInfo = STATE_ENDTRAINING;
+            Cbuf_AddText("\ndisconnect\n");
+        }
+        return 0;
+    }
 
 	FS_Close( pFile );
 
@@ -1611,6 +1562,11 @@ int __cdecl Host_Load( const char* pName )
 	Host_Map( FALSE, name, gameHeader.mapName, TRUE );
 
 	return 1;
+}
+} // namespace
+
+int __cdecl Host_Load(const char *pName) {
+    return Host_LoadWithFailurePolicy(pName, HostLoadFailurePolicy::Disconnect);
 }
 
 void FileCopy( FileHandle_t pOutput, FileHandle_t pInput, int fileSize )
@@ -1633,9 +1589,9 @@ void FileCopy( FileHandle_t pOutput, FileHandle_t pInput, int fileSize )
 
 TYPEDESCRIPTION gGameHeaderDescription[] =
 {
-	{ FIELD_INTEGER, "mapCount", offsetof( GAME_HEADER, mapCount ), 1, 0 },
-	{ FIELD_CHARACTER, "mapName", offsetof( GAME_HEADER, mapName ), 32, 0 },
-	{ FIELD_CHARACTER, "comment", offsetof( GAME_HEADER, comment ), 80, 0 },
+	DEFINE_FIELD( GAME_HEADER, mapCount, FIELD_INTEGER ),
+	DEFINE_ARRAY( GAME_HEADER, mapName, FIELD_CHARACTER, 32 ),
+	DEFINE_ARRAY( GAME_HEADER, comment, FIELD_CHARACTER, 80 ),
 };
 
 void SaveExit( SAVERESTOREDATA* save )
@@ -1654,177 +1610,59 @@ void SaveExit( SAVERESTOREDATA* save )
 	gGlobalVariables.pSaveData = NULL;
 }
 
-int SaveReadHeader( FileHandle_t pFile, GAME_HEADER* pHeader, int readGlobalState )
-{
-	int tag;
+#include "save_arena_impl.h"
 
-	FS_Read( &tag, sizeof( tag ), 1, pFile );
-	if ( tag != SAVEGAME_HEADER )
-	{
-		FS_Close( pFile );
-		return 0;
-	}
-
-	FS_Read( &tag, sizeof( tag ), 1, pFile );
-	if ( tag != SAVEGAME_VERSION )
-	{
-		FS_Close( pFile );
-		return 0;
-	}
-
-	return SaveReadHeader_0( pFile, pHeader, readGlobalState );
+int SaveReadHeader(FileHandle_t file, GAME_HEADER *header, int readGlobalState) {
+    std::int32_t tag = 0;
+    std::int32_t version = 0;
+    if (!ReadSaveInteger(file, tag) || tag != SAVEGAME_HEADER
+        || !ReadSaveInteger(file, version) || version != SAVEGAME_VERSION) {
+        FS_Close(file);
+        return 0;
+    }
+    return SaveReadHeader_0(file, header, readGlobalState);
 }
 
 TYPEDESCRIPTION gEntityTableDescription[] =
 {
-	{ FIELD_INTEGER, "id", offsetof( ENTITYTABLE, id ), 1, 0 },
-	{ FIELD_INTEGER, "location", offsetof( ENTITYTABLE, location ), 1, 0 },
-	{ FIELD_INTEGER, "size", offsetof( ENTITYTABLE, size ), 1, 0 },
-	{ FIELD_INTEGER, "flags", offsetof( ENTITYTABLE, flags ), 1, 0 },
-	{ FIELD_STRING, "classname", offsetof( ENTITYTABLE, classname ), 1, 0 },
+	DEFINE_FIELD( ENTITYTABLE, id, FIELD_INTEGER ),
+	DEFINE_FIELD( ENTITYTABLE, location, FIELD_INTEGER ),
+	DEFINE_FIELD( ENTITYTABLE, size, FIELD_INTEGER ),
+	DEFINE_FIELD( ENTITYTABLE, flags, FIELD_INTEGER ),
+	DEFINE_FIELD( ENTITYTABLE, classname, FIELD_STRING ),
 };
 
 TYPEDESCRIPTION gSaveHeaderDescription[] =
 {
-	{ FIELD_INTEGER, "skillLevel", offsetof( SAVE_HEADER, skillLevel ), 1, 0 },
-	{ FIELD_INTEGER, "entityCount", offsetof( SAVE_HEADER, entityCount ), 1, 0 },
-	{ FIELD_INTEGER, "connectionCount", offsetof( SAVE_HEADER, connectionCount ), 1, 0 },
-	{ FIELD_INTEGER, "lightStyleCount", offsetof( SAVE_HEADER, lightStyleCount ), 1, 0 },
-	{ FIELD_TIME, "time", offsetof( SAVE_HEADER, time ), 1, 0 },
-	{ FIELD_CHARACTER, "mapName", offsetof( SAVE_HEADER, mapName ), 32, 0 },
-	{ FIELD_CHARACTER, "skyName", offsetof( SAVE_HEADER, skyName ), 32, 0 },
-	{ FIELD_INTEGER, "skyColor_r", offsetof( SAVE_HEADER, skyColor_r ), 1, 0 },
-	{ FIELD_INTEGER, "skyColor_g", offsetof( SAVE_HEADER, skyColor_g ), 1, 0 },
-	{ FIELD_INTEGER, "skyColor_b", offsetof( SAVE_HEADER, skyColor_b ), 1, 0 },
-	{ FIELD_FLOAT, "skyVec_x", offsetof( SAVE_HEADER, skyVec_x ), 1, 0 },
-	{ FIELD_FLOAT, "skyVec_y", offsetof( SAVE_HEADER, skyVec_y ), 1, 0 },
-	{ FIELD_FLOAT, "skyVec_z", offsetof( SAVE_HEADER, skyVec_z ), 1, 0 },
+	DEFINE_FIELD( SAVE_HEADER, skillLevel, FIELD_INTEGER ),
+	DEFINE_FIELD( SAVE_HEADER, entityCount, FIELD_INTEGER ),
+	DEFINE_FIELD( SAVE_HEADER, connectionCount, FIELD_INTEGER ),
+	DEFINE_FIELD( SAVE_HEADER, lightStyleCount, FIELD_INTEGER ),
+	DEFINE_FIELD( SAVE_HEADER, time, FIELD_TIME ),
+	DEFINE_ARRAY( SAVE_HEADER, mapName, FIELD_CHARACTER, 32 ),
+	DEFINE_ARRAY( SAVE_HEADER, skyName, FIELD_CHARACTER, 32 ),
+	DEFINE_FIELD( SAVE_HEADER, skyColor_r, FIELD_INTEGER ),
+	DEFINE_FIELD( SAVE_HEADER, skyColor_g, FIELD_INTEGER ),
+	DEFINE_FIELD( SAVE_HEADER, skyColor_b, FIELD_INTEGER ),
+	DEFINE_FIELD( SAVE_HEADER, skyVec_x, FIELD_FLOAT ),
+	DEFINE_FIELD( SAVE_HEADER, skyVec_y, FIELD_FLOAT ),
+	DEFINE_FIELD( SAVE_HEADER, skyVec_z, FIELD_FLOAT ),
 };
 
 TYPEDESCRIPTION gAdjacencyDescription[] =
 {
-	{ FIELD_CHARACTER, "mapName", offsetof( LEVELLIST, mapName ), 32, 0 },
-	{ FIELD_CHARACTER, "landmarkName", offsetof( LEVELLIST, landmarkName ), 32, 0 },
-	{ FIELD_EDICT, "pentLandmark", offsetof( LEVELLIST, pentLandmark ), 1, 0 },
-	{ FIELD_VECTOR, "vecLandmarkOrigin", offsetof( LEVELLIST, vecLandmarkOrigin ), 1, 0 },
+	DEFINE_ARRAY( LEVELLIST, mapName, FIELD_CHARACTER, 32 ),
+	DEFINE_ARRAY( LEVELLIST, landmarkName, FIELD_CHARACTER, 32 ),
+	DEFINE_FIELD( LEVELLIST, pentLandmark, FIELD_EDICT ),
+	DEFINE_FIELD( LEVELLIST, vecLandmarkOrigin, FIELD_VECTOR ),
 };
 
 TYPEDESCRIPTION gLightstyleDescription[] =
 {
-	{ FIELD_INTEGER, "index", offsetof( SAVELIGHTSTYLE, index ), 1, 0 },
-	{ FIELD_CHARACTER, "style", offsetof( SAVELIGHTSTYLE, style ), MAX_LIGHTSTYLES, 0 },
+	DEFINE_FIELD( SAVELIGHTSTYLE, index, FIELD_INTEGER ),
+	DEFINE_ARRAY( SAVELIGHTSTYLE, style, FIELD_CHARACTER, MAX_LIGHTSTYLES ),
 };
 
-SAVERESTOREDATA* LoadSaveData( const char* level )
-{
-	char name[MAX_PATH];
-	char* pszTokenList;
-	FileHandle_t pFile;
-	SAVERESTOREDATA* pSaveData;
-	int i, tag, size, tableCount, tokenCount, tokenSize;
-	uint32_t tableSize, totalSize;
-
-	_snprintf( name, sizeof( name ), "%s%s.HL1", Host_SaveGameDirectory(), level );
-	COM_FixSlashes( name );
-	Con_Printf( "Loading game from %s...\n", name );
-
-	pFile = FS_OpenPathID( name, "rb", "GAMECONFIG" );
-	if ( !pFile )
-	{
-		Con_Printf( "ERROR: couldn't open.\n" );
-		return NULL;
-	}
-
-	//---------------------------------
-	// Read the header
-	FS_Read( &tag, sizeof( tag ), 1, pFile );
-	if ( tag != SAVEFILE_HEADER )
-	{
-		FS_Close( pFile );
-		return NULL;
-	}
-
-	FS_Read( &tag, sizeof( tag ), 1, pFile );
-	if ( tag > SAVEGAME_VERSION )
-	{
-		FS_Close( pFile );
-		return NULL;
-	}
-
-	FS_Read( &size, sizeof( size ), 1, pFile );
-	FS_Read( &tableCount, sizeof( tableCount ), 1, pFile );
-	FS_Read( &tokenCount, sizeof( tokenCount ), 1, pFile );
-	FS_Read( &tokenSize, sizeof( tokenSize ), 1, pFile );
-
-	tableSize = (uint32_t)tableCount * sizeof( ENTITYTABLE );
-	if ( size < 0 || tokenCount < 0 || tokenSize < 0 || (uint32_t)tokenSize > INT_MAX - (uint32_t)size )
-	{
-		FS_Close( pFile );
-		return NULL;
-	}
-
-	totalSize = (uint32_t)size + tokenSize;
-	if ( tableSize > INT_MAX - totalSize )
-	{
-		FS_Close( pFile );
-		return NULL;
-	}
-
-	totalSize += tableSize;
-	if ( INT_MAX - totalSize < sizeof( SAVERESTOREDATA ) )
-	{
-		FS_Close( pFile );
-		return NULL;
-	}
-
-	pSaveData = (SAVERESTOREDATA*)Mem_Calloc( (int)( totalSize + sizeof( SAVERESTOREDATA ) ), 1 );
-	if ( !pSaveData )
-	{
-		FS_Close( pFile );
-		return NULL;
-	}
-
-	pSaveData->tableCount = tableCount;
-	pSaveData->tokenCount = tokenCount;
-	pSaveData->tokenSize = tokenSize;
-
-	Q_strncpy( pSaveData->szCurrentMapName, level, sizeof( pSaveData->szCurrentMapName ) - 1 );
-	pSaveData->szCurrentMapName[sizeof( pSaveData->szCurrentMapName ) - 1] = '\0';
-
-	pszTokenList = (char*)( pSaveData + 1 );
-
-	if ( tokenSize > 0 )
-	{
-		FS_Read( pszTokenList, pSaveData->tokenSize, 1, pFile );
-
-		if ( !pSaveData->pTokens )
-			pSaveData->pTokens = (char**)Mem_Calloc( tokenCount, sizeof( char* ) );
-
-		// Make sure the token strings pointed to by the pToken hashtable.
-		for ( i = 0; i < tokenCount; i++ )
-		{
-			pSaveData->pTokens[i] = *pszTokenList ? pszTokenList : NULL;
-			pszTokenList += strlen( pszTokenList ) + 1;
-		}
-	}
-
-	pSaveData->pTable = (ENTITYTABLE*)pszTokenList;
-	pSaveData->connectionCount = 0;
-	pSaveData->size = 0;
-	pSaveData->pBaseData = pszTokenList + tableSize;
-	pSaveData->pCurrentData = pSaveData->pBaseData;
-	pSaveData->bufferSize = size;
-	pSaveData->fUseLandmark = 1;
-	pSaveData->time = 0.0f;
-	VectorClear( pSaveData->vecLandmarkOffset );
-
-	gGlobalVariables.pSaveData = pSaveData;
-
-	FS_Read( pSaveData->pBaseData, size, 1, pFile );
-	FS_Close( pFile );
-
-	return pSaveData;
-}
 
 void ParseSaveTables( SAVERESTOREDATA* pSaveData, SAVE_HEADER* pHeader, int updateGlobals )
 {
@@ -1914,7 +1752,7 @@ static void EntityInit( edict_t* pEdict, string_t className )
 	InitEntityDLLFields( pEdict );
 	pEdict->v.classname = className;
 
-	pEntityInit = GetEntityInit( pr_strings + className );
+	pEntityInit = GetEntityInit( CseStringAddress(pr_strings, className) );
 	if ( pEntityInit )
 		pEntityInit( &pEdict->v );
 }
@@ -2135,7 +1973,7 @@ edict_t* FindViewthing()
 	for ( i = 0; i < sv.num_edicts; i++ )
 	{
 		e = &sv.edicts[i];
-		if ( !Q_strcmp( pr_strings + e->v.classname, "viewthing" ) )
+		if ( !Q_strcmp( CseStringAddress(pr_strings, e->v.classname), "viewthing" ) )
 			return e;
 	}
 
@@ -2305,13 +2143,13 @@ int CreateEntityList( SAVERESTOREDATA* pSaveData, int levelMask )
 
 		if ( pEntInfo->flags & FENTTABLE_GLOBAL )
 		{
-			Con_DPrintf( "Merging changes for global: %s\n", pr_strings + pEntInfo->classname );
+			Con_DPrintf( "Merging changes for global: %s\n", CseStringAddress(pr_strings, pEntInfo->classname) );
 			gEntityInterface.pfnRestore( pent, pSaveData, 1 );
 			ED_Free( pent );
 			continue;
 		}
 
-		Con_DPrintf( "Transferring %s (%d)\n", pr_strings + pEntInfo->classname, NUM_FOR_EDICT( pent ) );
+		Con_DPrintf( "Transferring %s (%d)\n", CseStringAddress(pr_strings, pEntInfo->classname), NUM_FOR_EDICT( pent ) );
 
 		if ( gEntityInterface.pfnRestore( pent, pSaveData, 0 ) < 0 )
 		{
@@ -2323,7 +2161,7 @@ int CreateEntityList( SAVERESTOREDATA* pSaveData, int levelMask )
 
 		if ( !( pSaveData->pTable[i].flags & FENTTABLE_PLAYER ) && EntityInSolid( pent ) )
 		{
-			Con_DPrintf( "Suppressing %s\n", pr_strings + pSaveData->pTable[i].classname );
+			Con_DPrintf( "Suppressing %s\n", CseStringAddress(pr_strings, pSaveData->pTable[i].classname) );
 			ED_Free( pent );
 			continue;
 		}
@@ -2457,87 +2295,53 @@ void Host_EndSection( const char* pszSection )
 	Cbuf_AddText( "\ndisconnect\n" );
 }
 
-SAVERESTOREDATA* SaveInit( int size )
-{
-	int i;
-	SAVERESTOREDATA* pSaveData;
-	ENTITYTABLE* pTable;
-
-	if ( size <= 0 )
-		size = 0x80000;
-
-	pSaveData = (SAVERESTOREDATA*)Mem_Calloc(
-		(int)( size + sizeof( ENTITYTABLE ) * sv.num_edicts + sizeof( SAVERESTOREDATA ) ), 1 );
-
-	pSaveData->tokenSize = 0;
-	pSaveData->pTable = (ENTITYTABLE*)( pSaveData + 1 );
-
-	pSaveData->tokenCount = 0xFFF;
-	pSaveData->pTokens = (char**)Mem_Calloc( 0xFFF, sizeof( char* ) );
-
-	for ( i = 0; i < sv.num_edicts; i++ )
-	{
-		pTable = &pSaveData->pTable[i];
-		pTable->id = i;
-		pTable->pent = &sv.edicts[i];
-		pTable->flags = 0;
-		pTable->location = 0;
-		pTable->size = 0;
-		pTable->classname = 0;
-	}
-
-	pSaveData->tableCount = sv.num_edicts;
-	pSaveData->connectionCount = 0;
-	pSaveData->size = 0;
-	pSaveData->pBaseData = (char*)( pSaveData->pTable + sv.num_edicts );
-	pSaveData->pCurrentData = pSaveData->pBaseData;
-	pSaveData->bufferSize = size;
-	pSaveData->time = gGlobalVariables.time;
-	VectorCopy( vec3_origin, pSaveData->vecLandmarkOffset );
-	pSaveData->fUseLandmark = 0;
-
-	gGlobalVariables.pSaveData = pSaveData;
-
-	return pSaveData;
+SAVERESTOREDATA *SaveInit(int size) {
+    constexpr int DefaultSaveBufferBytes = 0x80000;
+    constexpr int SaveTokenSlots = 0xFFF;
+    if (size <= 0) {
+        size = DefaultSaveBufferBytes;
+    }
+    auto *save = AllocateSaveArena(size, sv.num_edicts, SaveTokenSlots, 0);
+    if (!save) {
+        Sys_Error("SaveInit: invalid arena size or allocation failure");
+    }
+    for (int index = 0; index < sv.num_edicts; ++index) {
+        auto &entry = save->pTable[index];
+        entry.id = index;
+        entry.pent = &sv.edicts[index];
+    }
+    save->time = gGlobalVariables.time;
+    VectorCopy(vec3_origin, save->vecLandmarkOffset);
+    gGlobalVariables.pSaveData = save;
+    return save;
 }
 
 #ifdef _MSC_VER
 #pragma warning( suppress: 6262 )
 #endif
-void CL_Save( const char* name )
-{
-	DECALLIST decalList[4096];
-	DECALLIST* entry;
-	FileHandle_t pFile;
-	int i, decalCount, tag;
-
-	decalCount = DecalListCreate( decalList );
-
-	pFile = FS_OpenPathID( name, "wb", "GAMECONFIG" );
-	if ( !pFile )
-		return;
-
-	tag = SAVEFILE_HEADER;
-	FS_Write( &tag, sizeof( int ), 1, pFile );
-	tag = SAVEGAME_VERSION;
-	FS_Write( &tag, sizeof( int ), 1, pFile );
-	FS_Write( &decalCount, sizeof( int ), 1, pFile );
-
-	for ( i = 0; i < decalCount; i++ )
-	{
-		entry = &decalList[i];
-#ifdef _WIN32
-		FS_Write( entry->name, DECAL_NAME_BYTES, 1, pFile );
-#else
-		FS_Write( entry->name, sizeof( entry->name ), 1, pFile );
-#endif
-		FS_Write( &entry->entityIndex, sizeof( entry->entityIndex ), 1, pFile );
-		FS_Write( &entry->depth, sizeof( entry->depth ), 1, pFile );
-		FS_Write( &entry->flags, sizeof( entry->flags ), 1, pFile );
-		FS_Write( entry->position, sizeof( entry->position ), 1, pFile );
-	}
-
-	FS_Close( pFile );
+void CL_Save(const char* name) {
+    constexpr int MaximumSavedDecals = 4096;
+    DECALLIST decals[MaximumSavedDecals];
+    const int decalCount = DecalListCreate(decals);
+    FileHandle_t file = FS_OpenPathID(name, "wb", "GAMECONFIG");
+    if (!file) {
+        return;
+    }
+    const int header = SAVEFILE_HEADER;
+    const int version = SAVEGAME_VERSION;
+    FS_Write(&header, sizeof(header), 1, file);
+    FS_Write(&version, sizeof(version), 1, file);
+    FS_Write(&decalCount, sizeof(decalCount), 1, file);
+    for (int index = 0; index < decalCount; ++index) {
+        const DECALLIST& decal = decals[index];
+        // The disk record contains sixteen name bytes, never the native pointer width.
+        FS_Write(decal.name, DECAL_NAME_BYTES, 1, file);
+        FS_Write(&decal.entityIndex, sizeof(decal.entityIndex), 1, file);
+        FS_Write(&decal.depth, sizeof(decal.depth), 1, file);
+        FS_Write(&decal.flags, sizeof(decal.flags), 1, file);
+        FS_Write(decal.position, sizeof(decal.position), 1, file);
+    }
+    FS_Close(file);
 }
 
 SAVERESTOREDATA* SaveGamestate()
@@ -2986,65 +2790,13 @@ void Host_Crash_f()
 	*(volatile int*)NULL = (int)0xDEADBEEF;
 }
 
-void DirectoryCopy( const char* pPath, FileHandle_t pFile )
-{
-	char basefindfn[MAX_PATH];
-	char szName[MAX_PATH];
-	const char* findfn;
-	FileHandle_t pCopy;
-	int size;
-
-	for ( findfn = Sys_FindFirst( pPath, basefindfn ); findfn; findfn = Sys_FindNext( basefindfn ) )
-	{
-		_snprintf( szName, sizeof( szName ), "%s%s", Host_SaveGameDirectory(), findfn );
-		COM_FixSlashes( szName );
-
-		pCopy = FS_OpenPathID( szName, "rb", "GAMECONFIG" );
-		size = FileSize( pCopy );
-
-		FS_Write( findfn, MAX_PATH, 1, pFile );
-		FS_Write( &size, sizeof( int ), 1, pFile );
-		FileCopy( pFile, pCopy, size );
-		FS_Close( pCopy );
-	}
-
-	Sys_FindClose();
+bool DirectoryCopy(const char *path, FileHandle_t file, std::int32_t expectedFileCount) {
+    return cse::save_archive::WriteDirectory(path, file, expectedFileCount);
 }
 
-void DirectoryExtract( FileHandle_t pFile, int fileCount )
-{
-	char fileName[MAX_PATH];
-	char szName[MAX_PATH];
-	char* pszExt;
-	FileHandle_t pCopy;
-	int i, fileSize;
-
-#if defined( _WIN32 ) && ( defined( HL25_HW_ENGINE ) || defined( SW_RENDERER ) )
-	for ( i = 0; i < fileCount; i++ )
-#else
-	for ( i = 0; i != fileCount; i++ )
-#endif
-	{
-		// Filename can only be as long as a map name + extension
-		FS_Read( fileName, MAX_PATH, 1, pFile );
-		fileName[MAX_PATH - 1] = '\0';
-		FS_Read( &fileSize, sizeof( int ), 1, pFile );
-
-		pszExt = COM_LastFileExtension( fileName );
-		if ( !pszExt || Q_strstr( fileName, "\\" ) || Q_strstr( fileName, ":" ) || Q_strstr( fileName, ".." )
-			 || Q_strstr( fileName, "~" ) || fileName[0] == '/' || pszExt[0] != 'H' || pszExt[1] != 'L' )
-		{
-			FS_Seek( pFile, fileSize, FILESYSTEM_SEEK_CURRENT );
-			continue;
-		}
-
-		_snprintf( szName, sizeof( szName ), "%s%s", Host_SaveGameDirectory(), fileName );
-		COM_FixSlashes( szName );
-
-		pCopy = FS_OpenPathID( szName, "wb", "GAMECONFIG" );
-		FileCopy( pCopy, pFile, fileSize );
-		FS_Close( pCopy );
-	}
+bool DirectoryExtract(FileHandle_t file, int fileCount) {
+    cse::save_archive::Layout layout{};
+    return cse::save_archive::ReadLayout(file, fileCount, layout) && cse::save_archive::Extract(file, layout);
 }
 
 void LandmarkOrigin( SAVERESTOREDATA* pSaveData, vec_t* output, const char* pLandmarkName )
@@ -3065,7 +2817,7 @@ void LandmarkOrigin( SAVERESTOREDATA* pSaveData, vec_t* output, const char* pLan
 
 void Host_SavegameComment( char* pszBuffer, int iSizeBuffer )
 {
-	const char* pszMapName = pr_strings + gGlobalVariables.mapname;
+	const char* pszMapName = CseStringAddress(pr_strings, gGlobalVariables.mapname);
 	const char* pszTitleName = NULL;
 	size_t i;
 
@@ -3090,70 +2842,28 @@ void Host_SavegameComment( char* pszBuffer, int iSizeBuffer )
 	pszBuffer[iSizeBuffer - 1] = '\0';
 }
 
-int SaveReadHeader_0( FileHandle_t pFile, GAME_HEADER* pHeader, int readGlobalState )
-{
-	int i, size, tokenCount, tokenSize;
-	char* pszTokenList;
-	SAVERESTOREDATA* pSaveData;
-
-	FS_Read( &size, sizeof( int ), 1, pFile );
-	FS_Read( &tokenCount, sizeof( int ), 1, pFile );
-	FS_Read( &tokenSize, sizeof( int ), 1, pFile );
-
-	if ( size < 0 || tokenCount < 0 || tokenSize < 0 || INT_MAX - size < tokenSize
-		 || INT_MAX - ( size + tokenSize ) < (int)sizeof( SAVERESTOREDATA ) )
-	{
-		FS_Close( pFile );
-		return 0;
-	}
-
-	pSaveData = (SAVERESTOREDATA*)Mem_Calloc( size + tokenSize + (int)sizeof( SAVERESTOREDATA ), 1 );
-	if ( !pSaveData )
-	{
-		FS_Close( pFile );
-		return 0;
-	}
-
-	pSaveData->tableCount = 0;
-	pSaveData->pTable = NULL;
-	pSaveData->connectionCount = 0;
-
-	pszTokenList = (char*)( pSaveData + 1 );
-
-	if ( tokenSize > 0 )
-	{
-		pSaveData->tokenCount = tokenCount;
-		pSaveData->tokenSize = tokenSize;
-
-		FS_Read( pszTokenList, tokenSize, 1, pFile );
-
-		if ( !pSaveData->pTokens )
-			pSaveData->pTokens = (char**)Mem_Calloc( tokenCount, sizeof( char* ) );
-
-		for ( i = 0; i < tokenCount; i++ )
-		{
-			pSaveData->pTokens[i] = *pszTokenList ? pszTokenList : NULL;
-			pszTokenList += strlen( pszTokenList ) + 1;
-		}
-	}
-
-	pSaveData->size = 0;
-	pSaveData->bufferSize = size;
-	pSaveData->fUseLandmark = 0;
-	pSaveData->time = 0.0f;
-	pSaveData->pCurrentData = pszTokenList;
-	pSaveData->pBaseData = pszTokenList;
-
-	FS_Read( pszTokenList, size, 1, pFile );
-
-	gEntityInterface.pfnSaveReadFields(
-		pSaveData, "GameHeader", pHeader, gGameHeaderDescription, ARRAYSIZE( gGameHeaderDescription ) );
-	if ( readGlobalState )
-		gEntityInterface.pfnRestoreGlobalState( pSaveData );
-
-	SaveExit( pSaveData );
-
-	return 1;
+int SaveReadHeader_0(FileHandle_t file, GAME_HEADER *header, int readGlobalState) {
+    std::int32_t dataBytes = 0;
+    std::int32_t tokenCount = 0;
+    std::int32_t tokenBytes = 0;
+    if (!ReadSaveInteger(file, dataBytes) || !ReadSaveInteger(file, tokenCount)
+        || !ReadSaveInteger(file, tokenBytes)) {
+        FS_Close(file);
+        return 0;
+    }
+    auto *save = ReadSaveArena(file, dataBytes, 0, tokenCount, tokenBytes);
+    if (!save) {
+        FS_Close(file);
+        return 0;
+    }
+    save->pTable = nullptr;
+    gEntityInterface.pfnSaveReadFields(
+        save, "GameHeader", header, gGameHeaderDescription, ARRAYSIZE(gGameHeaderDescription));
+    if (readGlobalState) {
+        gEntityInterface.pfnRestoreGlobalState(save);
+    }
+    SaveExit(save);
+    return 1;
 }
 
 int LoadGame( const char* pName )
@@ -3559,6 +3269,9 @@ void Host_SetRenderer_f()
 		windowed = !Q_strcasecmp( Cmd_Argv( 2 ), "windowed" );
 
 	VideoMode_SwitchMode( hardware, windowed );
+#if defined(__APPLE__)
+    nativeVideoRestart.SetRenderer(hardware, windowed != 0);
+#endif
 }
 
 void Host_SetVideoMode_f()
@@ -3575,6 +3288,9 @@ void Host_SetVideoMode_f()
 		bpp = Q_atoi( Cmd_Argv( 3 ) );
 
 	VideoMode_SetVideoMode( width, height, bpp );
+#if defined(__APPLE__)
+    nativeVideoRestart.SetSize(width, height);
+#endif
 }
 
 void Host_ShowOSK_f()
@@ -3588,8 +3304,8 @@ void Host_ShowOSK_f()
 		x = atoi( Cmd_Argv( 1 ) );
 		y = atoi( Cmd_Argv( 2 ) );
 #else
-		x = strtol( Cmd_Argv( 1 ), NULL, 10 );
-		y = strtol( Cmd_Argv( 2 ), NULL, 10 );
+        x = CseLegacyAtoi(Cmd_Argv(1));
+        y = CseLegacyAtoi(Cmd_Argv(2));
 #endif
 	}
 
@@ -3755,22 +3471,22 @@ int SaveGameSlot( const char* pSaveName, const char* pSaveComment )
 
 	pFile = FS_OpenPathID( name, "wb", "GAMECONFIG" );
 
-	tag = SAVEGAME_HEADER;
-	FS_Write( &tag, sizeof( int ), 1, pFile );
-	tag = SAVEGAME_VERSION;
-	FS_Write( &tag, sizeof( int ), 1, pFile );
-	FS_Write( &pSaveData->size, sizeof( int ), 1, pFile );
-	FS_Write( &pSaveData->tokenCount, sizeof( int ), 1, pFile );
-	FS_Write( &pSaveData->tokenSize, sizeof( int ), 1, pFile );
-	FS_Write( pTokenData, pSaveData->tokenSize, 1, pFile );
-	FS_Write( pSaveData->pBaseData, pSaveData->size, 1, pFile );
-
-	DirectoryCopy( hlPath, pFile );
-	FS_Close( pFile );
-
-	SaveExit( pSaveData );
-
-	return 1;
+    bool written = pFile != nullptr;
+    tag = SAVEGAME_HEADER;
+    written = written && cse::save_archive::WriteExact(pFile, &tag, sizeof(tag));
+    tag = SAVEGAME_VERSION;
+    written = written && cse::save_archive::WriteExact(pFile, &tag, sizeof(tag))
+        && cse::save_archive::WriteExact(pFile, &pSaveData->size, sizeof(pSaveData->size))
+        && cse::save_archive::WriteExact(pFile, &pSaveData->tokenCount, sizeof(pSaveData->tokenCount))
+        && cse::save_archive::WriteExact(pFile, &pSaveData->tokenSize, sizeof(pSaveData->tokenSize))
+        && cse::save_archive::WriteExact(pFile, pTokenData, pSaveData->tokenSize)
+        && cse::save_archive::WriteExact(pFile, pSaveData->pBaseData, pSaveData->size)
+        && DirectoryCopy(hlPath, pFile, gameHeader.mapCount);
+    if (pFile) {
+        FS_Close(pFile);
+    }
+    SaveExit(pSaveData);
+    return written ? 1 : 0;
 }
 
 int SaveGame( const char* pszSlot, const char* pszComment )

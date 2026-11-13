@@ -20,9 +20,7 @@
 #define UTL_ENGINE_ASSERTS
 #endif
 
-#if defined( _WIN32 )
-extern "C" _ACRTIMP void __cdecl _wassert( const wchar_t* message, const wchar_t* file, unsigned int line );
-#endif
+#include "../public/cse_assert.h"
 
 #ifdef UTL_ENGINE_ASSERTS
 #include <assert.h>
@@ -101,8 +99,9 @@ template <class T> CUtlMemory<T>::~CUtlMemory()
 template <class T> T& CUtlMemory<T>::operator[]( int i )
 {
 #ifdef UTL_ENGINE_ASSERTS
-	if ( !IsIdxValid( i ) )
-		_wassert( L"IsIdxValid(i)", UTLMEMORY_SOURCE_PATH, 155 );
+    if ( !IsIdxValid( i ) ) {
+        cse::platform::UtlAssertionFailure( L"IsIdxValid(i)", UTLMEMORY_SOURCE_PATH, 155 );
+    }
 #endif
 	return m_pMemory[i];
 }
@@ -110,8 +109,9 @@ template <class T> T& CUtlMemory<T>::operator[]( int i )
 template <class T> const T& CUtlMemory<T>::operator[]( int i ) const
 {
 #ifdef UTL_ENGINE_ASSERTS
-	if ( !IsIdxValid( i ) )
-		_wassert( L"IsIdxValid(i)", UTLMEMORY_SOURCE_PATH, 162 );
+    if ( !IsIdxValid( i ) ) {
+        cse::platform::UtlAssertionFailure( L"IsIdxValid(i)", UTLMEMORY_SOURCE_PATH, 162 );
+    }
 #endif
 	return m_pMemory[i];
 }
@@ -165,8 +165,9 @@ template <class T> void CUtlMemory<T>::Grow( int num )
 	if ( num > 0 )
 	{
 #ifdef UTL_ENGINE_ASSERTS
-		if ( IsExternallyAllocated() )
-			_wassert( L"0", UTLMEMORY_SOURCE_PATH, 233 );
+        if ( IsExternallyAllocated() ) {
+            cse::platform::UtlAssertionFailure( L"0", UTLMEMORY_SOURCE_PATH, 233 );
+        }
 #endif
 		growSize = num;
 	}
@@ -186,7 +187,7 @@ template <class T> void CUtlMemory<T>::Grow( int num )
 	if ( !memory )
 	{
 #ifdef UTL_ENGINE_ASSERTS
-		_wassert( L"m_pMemory", UTLMEMORY_SOURCE_PATH, 249 );
+        cse::platform::UtlAssertionFailure( L"m_pMemory", UTLMEMORY_SOURCE_PATH, 249 );
 #endif
 		std::abort();
 	}

@@ -8,6 +8,7 @@
 #pragma once
 
 #include "IGameConsole.h"
+#include <cstdint>
 
 class CGameConsoleDialog;
 
@@ -17,6 +18,10 @@ public:
 	CGameConsole();
 	~CGameConsole() override;
 
+#if INTPTR_MAX > INT32_MAX
+    bool TryRetireNativePanel();
+    bool IsNativePanelRetired() const;
+#endif
 	void Activate() override;
 	// sets up the console for use
 	void Initialize() override;
@@ -25,7 +30,7 @@ public:
 	bool IsConsoleVisible() override;
 	void Printf( const char* format, ... ) override;
 	void DPrintf( const char* format, ... ) override;
-	void SetParent( int parent ) override;
+	void SetParent( vgui2::VPANEL parent ) override;
 
 	// activates the console after a delay
 	void ActivateDelayed( float time );

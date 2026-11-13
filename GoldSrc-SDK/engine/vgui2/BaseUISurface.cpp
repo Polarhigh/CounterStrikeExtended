@@ -1,5 +1,9 @@
 #include "../../common/sdl3_input.h"
 #include "../../common/sdl3_cursor.h"
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+#include "../../common/sdl3_native_mouse_bridge.h"
+#endif
+#include "../../common/sdl3_keyboard.h"
 #include "BaseUISurface.h"
 #include "../keys.h"
 #include "../vgui/IPanel.h"
@@ -27,11 +31,15 @@
 #include "../glquake.h"
 
 #include <cstring>
+#include <cstdio>
 
 #include <cstdlib>
 #include "../sdl3_window.h"
 
-#if !defined( _WIN32 )
+#if defined(__APPLE__)
+#include "../sys.h"
+#include "../../vgui2/vgui_surfacelib/native/MacFontRegistration.h"
+#elif !defined( _WIN32 )
 #include <fontconfig/fontconfig.h>
 #endif
 
@@ -62,6 +70,9 @@ static SDL_Cursor* staticDefaultCursor[MAX_DEFAULT_CURSORS];
 static SDL_Cursor* staticCurrentCursor;
 static bool s_bCursorVisible = true;
 static bool s_bUsedRawInputLast;
+#if defined(__APPLE__)
+static bool s_bUsedNativeCaptureLast;
+#endif
 
 cvar_t sdl_double_click_size = { "sdl_double_click_size", "2" };
 cvar_t sdl_double_click_time = { "sdl_double_click_time", "400" };
@@ -122,15 +133,11 @@ void BaseUISurface::AppHandler(void *event, void *) {
             if (error) {
                 break;
             }
-#if defined(_WIN32)
             const cse::Utf16Character units = cse::EncodeUtf16(ch);
             g_InputInternal->InternalKeyTyped(static_cast<wchar_t>(units.first));
             if (units.count == 2) {
                 g_InputInternal->InternalKeyTyped(static_cast<wchar_t>(units.second));
             }
-#else
-            g_InputInternal->InternalKeyTyped(static_cast<wchar_t>(ch));
-#endif
             i += bytes;
         }
         break;
@@ -264,12 +271,21 @@ void BaseUISurface::CalculateMouseVisible() {
 
     SetCursor(vgui2::dc_none);
     LockCursor();
-    if (!m_rawinput.value && BUsesSDLInput()) {
+    if (!m_rawinput.value && BUsesSDLInput()
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+        && CseSdl_QueryMouseModeV1(CSE_SDL_MOUSE_MODE_CONTRACT_V1) == CseSdlMouseModeAbsolute
+#endif
+    ) {
         int wide, tall;
         SDL_GetWindowSize((SDL_Window *)game->GetMainWindow(), &wide, &tall);
         SDL_WarpMouseInWindow((SDL_Window *)game->GetMainWindow(), static_cast<float>(wide / 2),
                               static_cast<float>(tall / 2));
 
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+        if (!cse::RefreshNativeGameplayShortcuts()) {
+            return;
+        }
+#endif
         SDL_PumpEvents();
         SDL_GetRelativeMouseState(nullptr, nullptr);
     }
@@ -303,15 +319,7 @@ void BaseUISurface::SetScreenBounds( int x, int y, int width, int height )
 	m_iSurfaceBounds[3] = height;
 }
 
-#ifdef _MSC_VER
-#pragma warning( suppress: 26495 )
-#endif
-BaseUISurface::BaseUISurface()
-    : _restrictedPanel(0), m_hCurrentFont(0), m_iCurrentTexture(0), m_pChromeController(NULL), _cursorLocked(false),
-      _proportionalBaseWidth(640), _proportionalBaseHeight(480), _needMouse(true), _needKB(true),
-      m_bVGUI2MouseControl(false), m_bFullScreen(false), m_bSupportsEsc(false), m_deltax(0), m_deltay(0),
-      _proportionalBaseWidth_HD(1280), _proportionalBaseHeight_HD(720) {
-    m_bTranslateExtendedKeys = true;
+static void InitializeDefaultCursors() {
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_InitSubSystem(SDL_INIT_VIDEO);
     }
@@ -332,6 +340,26 @@ BaseUISurface::BaseUISurface()
     staticCurrentCursor = staticDefaultCursor[vgui2::dc_arrow];
 }
 
+#ifdef _MSC_VER
+#pragma warning( suppress: 26495 )
+#endif
+BaseUISurface::BaseUISurface()
+    : _restrictedPanel(0), m_hCurrentFont(0), m_iCurrentTexture(0), m_pChromeController(NULL), _cursorLocked(false),
+      _proportionalBaseWidth(640), _proportionalBaseHeight(480), _needMouse(true), _needKB(true),
+      m_bVGUI2MouseControl(false), m_bFullScreen(false), m_bSupportsEsc(false), m_deltax(0), m_deltay(0),
+      _proportionalBaseWidth_HD(1280), _proportionalBaseHeight_HD(720) {
+    m_bTranslateExtendedKeys = true;
+#if defined(__APPLE__)
+    if (!cse::ConfigureMacKeyRepeat()) {
+        std::fputs("SDL key-repeat configuration failed before UI startup\n", stderr);
+        std::abort();
+    }
+#endif
+#if !defined(SW_RENDERER) && !defined(__APPLE__)
+    InitializeDefaultCursors();
+#endif
+}
+
 BaseUISurface g_BaseUISurface;
 
 using vgui2::ISurface;
@@ -345,6 +373,15 @@ BaseUISurface::~BaseUISurface()
 
 void BaseUISurface::Init( VPANEL embeddedPanel, IEngineSurface* engineSurface, IHTMLChromeController* chromeController )
 {
+#if defined(__APPLE__) && !defined(SW_RENDERER)
+    // CGame owns SDL video. Creating Cocoa cursors in the global constructor can deadlock dyld.
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
+        Sys_Error("Hardware surface initialization requires the game video owner");
+    }
+#endif
+#if defined(SW_RENDERER) || defined(__APPLE__)
+    InitializeDefaultCursors();
+#endif
 	_engineSurface = engineSurface;
 	SetEmbeddedPanel( embeddedPanel );
 	if ( SteamApps() )
@@ -356,7 +393,9 @@ void BaseUISurface::Init( VPANEL embeddedPanel, IEngineSurface* engineSurface, I
 	m_pChromeController = chromeController;
 	if ( m_pChromeController )
 	{
+#if INTPTR_MAX <= INT32_MAX
 		m_pChromeController->Init( "htmlcache", "htmlcookies" );
+#endif
 		m_pChromeController->SetCefThreadTargetFrameRate( 60 );
 	}
 }
@@ -364,18 +403,24 @@ void BaseUISurface::Init( VPANEL embeddedPanel, IEngineSurface* engineSurface, I
 void BaseUISurface::Shutdown() {
     if (m_pChromeController) {
         m_pChromeController->Shutdown();
+#if INTPTR_MAX > INT32_MAX
+        m_pChromeController = nullptr;
+#endif
     }
 
 #if defined(_WIN32)
     for (int i = 0; i < m_CustomFontFileNames.Count(); i++) {
         RemoveFontResourceExA(m_CustomFontFileNames[i].String(), FR_PRIVATE, NULL);
     }
+#elif defined(__APPLE__)
+    cse::fonts::ReleaseMacCustomFonts(this);
 #endif
     m_CustomFontFileNames.RemoveAll();
 
     for (int i = 0; i < MAX_DEFAULT_CURSORS; i++) {
         if (staticDefaultCursor[i]) {
             SDL_DestroyCursor(staticDefaultCursor[i]);
+            staticDefaultCursor[i] = nullptr;
         }
     }
     staticPopupList.RemoveAll();
@@ -421,12 +466,71 @@ void BaseUISurface::SetCursor(vgui2::HCursor cursor) {
         staticCurrentCursor = staticDefaultCursor[cursor];
         [[fallthrough]];
     default:
+#if defined(__APPLE__) && INTPTR_MAX > INT32_MAX
+        if (cse::NativeMouseWindowState().CaptureAllowed()) {
+            SDL_SetCursor(staticCurrentCursor);
+        }
+#else
         SDL_SetCursor(staticCurrentCursor);
+#endif
         break;
     }
 
     const bool useRawInput = m_rawinput.value && BUsesSDLInput();
+#if defined(__APPLE__)
+    const bool gameplayCapture = _currentCursor == vgui2::dc_none;
+#elif INTPTR_MAX > INT32_MAX
+    constexpr bool gameplayCapture = true;
+#endif
     SDL_Window *window = (SDL_Window *)game->GetMainWindow();
+#if INTPTR_MAX > INT32_MAX
+    cse::NativeMouseWindow &mouseWindow = cse::NativeMouseWindowState();
+    if (cse::CursorRequestChanged(wasVisible, s_bCursorVisible, s_bUsedRawInputLast, useRawInput) ||
+        mouseWindow.NeedsRetry(cse::NativeCursorOwner::VGui2)
+#if defined(__APPLE__)
+        || s_bUsedNativeCaptureLast != gameplayCapture
+#endif
+    ) {
+        cse::NativeCursorTransaction transaction;
+        if (mouseWindow.Begin(window, cse::NativeCursorOwner::VGui2, s_bCursorVisible, useRawInput, transaction,
+                              gameplayCapture
+#if defined(__APPLE__)
+                              , !s_bCursorVisible && cl_mousegrab.value != 0.0f ?
+                                cse::NativeMouseGrab::Enabled : cse::NativeMouseGrab::Disabled
+#endif
+                              )) {
+#if !defined(__APPLE__)
+            SDL_SetWindowMouseGrab(window, !s_bCursorVisible && cl_mousegrab.value != 0.0f);
+#endif
+            if (transaction.Current() && transaction.Changed()) {
+#if defined(__APPLE__)
+                if (!cse::RefreshNativeGameplayShortcuts()) {
+                    return;
+                }
+#endif
+                SDL_PumpEvents();
+            }
+#if !defined(__APPLE__)
+            if (transaction.Current() && transaction.Changed()) {
+                SDL_GetRelativeMouseState(nullptr, nullptr);
+            }
+#endif
+            if (transaction.Current()) {
+                if (transaction.Changed()) {
+                    m_deltax = 0.0f;
+                    m_deltay = 0.0f;
+                }
+                game->SetCursorVisible(s_bCursorVisible);
+            }
+            if (transaction.Commit()) {
+                s_bUsedRawInputLast = useRawInput;
+#if defined(__APPLE__)
+                s_bUsedNativeCaptureLast = gameplayCapture;
+#endif
+            }
+        }
+    }
+#else
     if (cse::CursorRequestChanged(wasVisible, s_bCursorVisible, s_bUsedRawInputLast, useRawInput)) {
         cse::ApplyCursorVisibility(window, s_bCursorVisible, useRawInput);
         SDL_SetWindowMouseGrab(window, !s_bCursorVisible && cl_mousegrab.value != 0.0f);
@@ -437,6 +541,7 @@ void BaseUISurface::SetCursor(vgui2::HCursor cursor) {
         game->SetCursorVisible(s_bCursorVisible);
     }
     s_bUsedRawInputLast = useRawInput;
+#endif
 }
 
 bool BaseUISurface::m_bTranslateExtendedKeys = true;
@@ -707,6 +812,11 @@ void BaseUISurface::AddPanel( vgui2::VPANEL panel )
 
 void BaseUISurface::SolveTraverse( vgui2::VPANEL panel, bool forceApplySchemeSettings )
 {
+#if INTPTR_MAX > INT32_MAX
+    if (!panel) {
+        return;
+    }
+#endif
 	InternalSchemeSettingsTraverse( panel, forceApplySchemeSettings );
 	InternalThinkTraverse( panel );
 	InternalSolveTraverse( panel );
@@ -872,6 +982,8 @@ bool BaseUISurface::AddCustomFontFile( const char* filename )
 	vgui2::filesystem()->GetLocalPath( filename, localPath, sizeof( localPath ) );
 	m_CustomFontFileNames.AddToTail( CUtlSymbol( filename ) );
 	return AddFontResourceExA( localPath, FR_PRIVATE, NULL ) > 0 || AddFontResourceA( localPath ) > 0;
+#elif defined(__APPLE__)
+    return cse::fonts::RegisterMacCustomFontFile(this, vgui2::filesystem(), filename);
 #else
 	char localPath[4096];
 	vgui2::filesystem()->GetLocalPath( filename, localPath, sizeof( localPath ) );

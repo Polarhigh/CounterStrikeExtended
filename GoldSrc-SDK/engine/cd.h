@@ -84,6 +84,9 @@ public:
     void _PrimeFile(const char *filename, int looping);
 	void _Pause( int, int );
 	void _Resume( int, int );
+#if defined(__APPLE__)
+    void _ApplyAppFocus(int, int);
+#endif
 	void _Stop( int, int );
 	void _Eject( int, int );
 	void _CloseDoor( int, int );
@@ -132,5 +135,22 @@ void		CDAudio_Shutdown();
 void		CDAudio_Play( int track, int looping );
 void		CDAudio_Pause();
 void		CDAudio_Resume();
+#if defined(__APPLE__)
+// Engine-private focus intent; the existing worker owns playback transitions.
+void CDAudio_AppFocusChanged(bool active);
+#endif
 void		MP3_Suspend_Audio();
 void		PrimeMusicStream( char* filename, int looping );
+
+// Owned engine-local lifetime boundary; no exported interface/vtable change.
+bool CDAudio_ShutdownForModuleUnload();
+
+namespace cse {
+class AudioModuleShutdown {
+public:
+    AudioModuleShutdown() = default;
+    ~AudioModuleShutdown() noexcept;
+    AudioModuleShutdown(const AudioModuleShutdown&) = delete;
+    AudioModuleShutdown& operator=(const AudioModuleShutdown&) = delete;
+};
+}

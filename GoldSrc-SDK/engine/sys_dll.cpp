@@ -17,8 +17,11 @@
 #include "zone.h"
 #include "conprint.h"
 #include "eiface.h"
+#include "../common/generated_game_module_layouts.h"
+#include "../common/game_module_entry.h"
 
 #if !defined( _WIN32 )
+#include "game_library_name.h"
 #include <ctime>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -78,10 +81,10 @@ char gszExtendedDisconnectReason[DISCONNECT_REASON_BYTES];
 void ( *Console_Printf )( char* format, ... );
 extern void ( *Launcher_ConsolePrintf )( char* format, ... );
 
-constexpr int ENGINE_FUNCTION_TABLE_BYTES = 636;
-constexpr int GAME_FUNCTION_TABLE_BYTES = 200;
-static_assert( sizeof( enginefuncs_t ) == ENGINE_FUNCTION_TABLE_BYTES );
-static_assert( sizeof( DLL_FUNCTIONS ) == GAME_FUNCTION_TABLE_BYTES );
+constexpr std::size_t EngineFunctionCount = 160; // Legacy 159 entries plus owned worldspawn lookup.
+constexpr std::size_t GameFunctionCount = 50;
+static_assert(sizeof(enginefuncs_t) == EngineFunctionCount * sizeof(decltype(enginefuncs_t::pfnPrecacheModel)));
+static_assert(sizeof(DLL_FUNCTIONS) == GameFunctionCount * sizeof(decltype(DLL_FUNCTIONS::pfnGameInit)));
 
 enginefuncs_t g_engfuncsExportedToDlls = { PF_precache_model_I, PF_precache_sound_I, PF_setmodel_I, PF_modelindex,
 	ModelFrames, PF_setsize_I, PF_changelevel_I, PF_setspawnparms_I, SaveSpawnParms, PF_vectoyaw_I, PF_vectoangles_I,
@@ -109,7 +112,7 @@ enginefuncs_t g_engfuncsExportedToDlls = { PF_precache_model_I, PF_precache_soun
 	PF_GetPlayerAuthId, SequenceGet, SequencePickSentence, COM_FileSize, COM_GetApproxWavePlayLength,
 	VGuiWrap2_IsInCareerMatch, VGuiWrap2_GetLocalizedStringLength, RegisterTutorMessageShown, GetTimesTutorMessageShown,
 	ProcessTutorMessageDecayBuffer, ConstructTutorMessageDecayBuffer, ResetTutorMessageDecayData, QueryClientCvarValue,
-	QueryClientCvarValue2, EngCheckParm, PEntityOfEntIndexAllEntities };
+	QueryClientCvarValue2, EngCheckParm, PEntityOfEntIndexAllEntities, GetWorldspawnString };
 
 #if defined( _WIN32 )
 void Sys_CheckOSVersion();
@@ -339,25 +342,59 @@ void Sys_GetRegKeyValue( const char* keyPath, const char* valueName, char* outpu
 }
 #endif
 
-DISPATCHFUNCTION GetDispatch( const char* name )
-{
-	for ( int index = 0; index < g_iextdllMac; ++index )
-	{
-#if !defined( _WIN32 )
-		void* function = dlsym( reinterpret_cast<void*>( g_rgextdll[index].lDLLHandle ), name );
+template<typename Function>
+static Function FindGameDispatch(const char* name) {
+    for (int index = 0; index < g_iextdllMac; ++index) {
+#if defined(_WIN32)
+        FARPROC function = GetProcAddress(g_rgextdll[index].lDLLHandle, name);
 #else
-		FARPROC function = GetProcAddress( g_rgextdll[index].lDLLHandle, name );
+        void* function = dlsym(g_rgextdll[index].lDLLHandle, name);
 #endif
-		if ( function )
-			return reinterpret_cast<DISPATCHFUNCTION>( function );
-	}
-	return nullptr;
+        if (function) {
+            return reinterpret_cast<Function>(function);
+        }
+    }
+    return nullptr;
 }
 
-ENTITYINIT GetEntityInit( const char* classname )
-{
-	return reinterpret_cast<ENTITYINIT>( GetDispatch( classname ) );
+DISPATCHFUNCTION GetDispatch(const char* name) {
+    return FindGameDispatch<DISPATCHFUNCTION>(name);
 }
+
+ENTITYINIT GetEntityInit(const char* classname) {
+    return FindGameDispatch<ENTITYINIT>(classname);
+}
+
+#if !defined(_WIN32)
+static void LoadNativeGameLibrary(const char* configuredName, const char* gameDirectory, bool legacyLinuxSuffix,
+    char* filename, int filenameBytes) {
+    char value[cse::GameLibraryValueBytes];
+    Q_strncpy(value, configuredName, sizeof(value) - 1);
+    value[sizeof(value) - 1] = 0;
+    const int parameter = COM_CheckParm("-dll");
+    if (parameter && parameter < com_argc - 1) {
+        Q_strncpy(value, com_argv[parameter + 1], sizeof(value) - 1);
+        value[sizeof(value) - 1] = 0;
+    }
+    char* parentDirectory = Q_strstr(value, "..");
+    if (value[0] == '/' || value[0] == '\\' || Q_strstr(value, ":")
+        || (parentDirectory && Q_strstr(parentDirectory + 2, ".."))) {
+        Con_DPrintf("Skipping library with illegal characters in path: %s\n", value);
+        return;
+    }
+    if (!cse::NormalizeGameLibraryName(value, sizeof(value), cse::NativeGameLibraryPlatform(), legacyLinuxSuffix)) {
+        Con_DPrintf("Skipping non-shared library:  %s\n", value);
+        return;
+    }
+    filename[0] = 0;
+    if (!FS_GetLocalPath(value, filename, filenameBytes) || !filename[0]) {
+        Con_DPrintf("Could not resolve game library: %s\n", value);
+        return;
+    }
+    Con_DPrintf("\nAdding:  %s/%s\n", gameDirectory, value);
+    LoadThisDll(filename);
+}
+#endif
 
 void LoadEntityDLLs( char* basedir )
 {
@@ -371,7 +408,11 @@ void LoadEntityDLLs( char* basedir )
 		gmodinfo.bIsMod = true;
 
 	char listFilename[260];
+#if !defined(_WIN32)
+    char dllFilename[8192]{};
+#else
 	char dllFilename[8192];
+#endif
 	_snprintf( listFilename, sizeof( listFilename ), "%s", "liblist.gam" );
 	FileHandle_t file = FS_Open( listFilename, "rb" );
 	if ( file )
@@ -388,6 +429,9 @@ void LoadEntityDLLs( char* basedir )
 			Sys_Error( "Error reading in game listing file, expected %i bytes, read %i", fileSize, bytesRead );
 		listing[fileSize] = 0;
 		com_ignorecolons = true;
+#if !defined(_WIN32)
+        cse::GameLibraryFallbacks<MAX_EXT_DLLS, cse::GameLibraryValueBytes> fallbacks;
+#endif
 		const char* cursor = COM_Parse( listing );
 		while ( Q_strlen( com_token ) > 0 )
 		{
@@ -397,11 +441,17 @@ void LoadEntityDLLs( char* basedir )
 			cursor = COM_Parse( cursor );
 			Q_strncpy( value, com_token, sizeof( value ) - 1 );
 			value[sizeof( value ) - 1] = 0;
-#if !defined( _WIN32 )
-			if ( Q_strcasecmp( key, "gamedll_linux" ) != 0 )
+#if !defined(_WIN32)
+            if (Q_strcasecmp(key, cse::GameLibraryMetadataKey(cse::NativeGameLibraryPlatform())) == 0) {
+                fallbacks.MarkPrimary();
+                LoadNativeGameLibrary(value, gameDirectory, true, dllFilename, sizeof(dllFilename));
+            } else if (Q_strcasecmp(key, "gamedll") == 0) {
+                fallbacks.Remember(value);
+            } else {
+                DLL_SetModKey(&gmodinfo, key, value);
+            }
 #else
 			if ( Q_strcasecmp( key, "gamedll" ) != 0 )
-#endif
 			{
 				DLL_SetModKey( &gmodinfo, key, value );
 			}
@@ -421,24 +471,6 @@ void LoadEntityDLLs( char* basedir )
 				}
 				else
 				{
-#if !defined( _WIN32 )
-					char* underscore = std::strchr( value, '_' );
-					if ( underscore != nullptr )
-					{
-						*underscore = '\0';
-						Q_strcat( value, ".so" );
-					}
-					if ( Q_strcasecmp( COM_LastFileExtension( value ), "so" ) != 0 )
-					{
-						Con_DPrintf( "Skipping non-shared library:  %s\n", value );
-					}
-					else
-					{
-						FS_GetLocalPath( value, dllFilename, sizeof( dllFilename ) );
-						Con_DPrintf( "\nAdding:  %s/%s\n", gameDirectory, value );
-						LoadThisDll( dllFilename );
-					}
-#else
 					if ( Q_strcasecmp( COM_FileExtension( value ), "dll" ) != 0 )
 					{
 						Con_DPrintf( "Skipping non-dll:  %s\n", value );
@@ -449,11 +481,21 @@ void LoadEntityDLLs( char* basedir )
 						Con_DPrintf( "\nAdding:  %s/%s\n", gameDirectory, value );
 						LoadThisDll( dllFilename );
 					}
-#endif
 				}
 			}
+#endif
 			cursor = COM_Parse( cursor );
 		}
+#if !defined(_WIN32)
+        if (fallbacks.UseFallbacks()) {
+            for (std::size_t index = 0; index < fallbacks.Count(); ++index) {
+                LoadNativeGameLibrary(fallbacks.Name(index), gameDirectory, false, dllFilename, sizeof(dllFilename));
+            }
+            if (fallbacks.Overflowed()) {
+                Con_DPrintf("Too many game libraries in liblist.gam (maximum %i)\n", MAX_EXT_DLLS);
+            }
+        }
+#endif
 		com_ignorecolons = false;
 		std::free( listing );
 		FS_Close( file );
@@ -461,7 +503,9 @@ void LoadEntityDLLs( char* basedir )
 	else
 	{
 		char wildcard[260];
-#if !defined( _WIN32 )
+#if defined(__APPLE__)
+        std::snprintf(wildcard, sizeof(wildcard), "%s/*.dylib", "valve/dlls");
+#elif !defined( _WIN32 )
 		std::snprintf( wildcard, sizeof( wildcard ), "%s/*.so", "valve/dlls" );
 #else
 		_snprintf( wildcard, sizeof( wildcard ), "%s\\*.dll", "valve\\dlls" );
@@ -483,15 +527,14 @@ void LoadEntityDLLs( char* basedir )
 	gNewDLLFunctions.pfnGameShutdown = nullptr;
 	gNewDLLFunctions.pfnShouldCollide = nullptr;
 	gNewDLLFunctions.pfnCvarValue = nullptr;
-	NEW_DLL_FUNCTIONS_FN getNewFunctions =
-		reinterpret_cast<NEW_DLL_FUNCTIONS_FN>( GetDispatch( "GetNewDLLFunctions" ) );
+    NEW_DLL_FUNCTIONS_FN getNewFunctions = FindGameDispatch<NEW_DLL_FUNCTIONS_FN>("GetNewDLLFunctions");
 	int interfaceVersion;
 	if ( getNewFunctions )
 	{
 		interfaceVersion = NEW_DLL_FUNCTIONS_VERSION;
 		getNewFunctions( &gNewDLLFunctions, &interfaceVersion );
 	}
-	APIFUNCTION2 getEntityAPI2 = reinterpret_cast<APIFUNCTION2>( GetDispatch( "GetEntityAPI2" ) );
+	APIFUNCTION2 getEntityAPI2 = FindGameDispatch<APIFUNCTION2>("GetEntityAPI2");
 	if ( getEntityAPI2 )
 	{
 		interfaceVersion = INTERFACE_VERSION;
@@ -510,7 +553,7 @@ void LoadEntityDLLs( char* basedir )
 	}
 	else
 	{
-		APIFUNCTION getEntityAPI = reinterpret_cast<APIFUNCTION>( GetDispatch( "GetEntityAPI" ) );
+		APIFUNCTION getEntityAPI = FindGameDispatch<APIFUNCTION>("GetEntityAPI");
 		if ( !getEntityAPI )
 			Host_Error( "Couldn't get DLL API from %s!", dllFilename );
 		interfaceVersion = INTERFACE_VERSION;
@@ -528,200 +571,43 @@ void LoadEntityDLLs( char* basedir )
 }
 
 #if defined( _WIN32 )
-static byte* GetDirectoryInFile( byte* image, unsigned int directory )
-{
-	IMAGE_NT_HEADERS32* nt = reinterpret_cast<IMAGE_NT_HEADERS32*>( image + reinterpret_cast<IMAGE_DOS_HEADER*>( image )->e_lfanew );
-	IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION( nt );
-	int sectionCount = nt->FileHeader.NumberOfSections;
-	int i;
-
-	if ( directory >= nt->OptionalHeader.NumberOfRvaAndSizes )
-		return NULL;
-
-	DWORD address = nt->OptionalHeader.DataDirectory[directory].VirtualAddress;
-	for ( i = 0; i < sectionCount; i++, section++ )
-	{
-		if ( section->VirtualAddress <= address && section->VirtualAddress + section->SizeOfRawData > address )
-			break;
-	}
-
-	if ( i + 1 > sectionCount )
-		return NULL;
-
-	return image + address + section->PointerToRawData - section->VirtualAddress;
-}
-
-static char* GetExportNamesInFile( byte* image )
-{
-	IMAGE_EXPORT_DIRECTORY* exports = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>( GetDirectoryInFile( image, IMAGE_DIRECTORY_ENTRY_EXPORT ) );
-	if ( !exports )
-		return NULL;
-
-	IMAGE_NT_HEADERS32* nt = reinterpret_cast<IMAGE_NT_HEADERS32*>( image + reinterpret_cast<IMAGE_DOS_HEADER*>( image )->e_lfanew );
-	int sectionCount = nt->FileHeader.NumberOfSections;
-	IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION( nt );
-	if ( !section )
-		return NULL;
-
-	for ( int i = 0; i < sectionCount; i++, section++ )
-	{
-		if ( !strcmp( reinterpret_cast<char*>( section->Name ), ".rdata" ) )
-		{
-			DWORD* names = reinterpret_cast<DWORD*>( image + exports->AddressOfNames - section->VirtualAddress + section->PointerToRawData );
-			return reinterpret_cast<char*>( image + names[0] - section->VirtualAddress + section->PointerToRawData );
-		}
-	}
-
-	return NULL;
-}
-
-static int GetExportNamesLength( byte* image )
-{
-	IMAGE_EXPORT_DIRECTORY* exports = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>( GetDirectoryInFile( image, IMAGE_DIRECTORY_ENTRY_EXPORT ) );
-	if ( !exports )
-		return 0;
-
-	char* first = GetExportNamesInFile( image );
-	if ( !first )
-		return 0;
-
-	char* name = first;
-	for ( int i = 0; i < (int)exports->NumberOfNames; i++ )
-		name += strlen( name ) + 1;
-
-	return name - first;
-}
-
-static void CopyExportNames( byte* image, char* output )
-{
-	IMAGE_EXPORT_DIRECTORY* exports = reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>( GetDirectoryInFile( image, IMAGE_DIRECTORY_ENTRY_EXPORT ) );
-	if ( !exports )
-		return;
-
-	char* first = GetExportNamesInFile( image );
-	if ( !first )
-		return;
-
-	char* name = first;
-	for ( int i = 0; i < (int)exports->NumberOfNames; i++ )
-		name += strlen( name ) + 1;
-
-	memcpy( output, first, name - first );
-}
-
-static int GetExportNames( const char* filename, char** names )
-{
-	OFSTRUCT openBuffer;
-
-	FS_GetLocalCopy( filename );
-	HANDLE file = reinterpret_cast<HANDLE>( static_cast<INT_PTR>( OpenFile( filename, &openBuffer, OF_READ ) ) );
-	if ( !file )
-		return 0;
-
-	HANDLE mapping = CreateFileMappingA( file, NULL, PAGE_READONLY, 0, 0, NULL );
-	if ( !mapping )
-	{
-		CloseHandle( file );
-		return 0;
-	}
-
-	byte* image = static_cast<byte*>( MapViewOfFile( mapping, FILE_MAP_READ, 0, 0, 0 ) );
-	if ( !image )
-	{
-		CloseHandle( mapping );
-		CloseHandle( file );
-		return 0;
-	}
-
-	char* buffer = NULL;
-	int length = GetExportNamesLength( image );
-	if ( length )
-	{
-		buffer = static_cast<char*>( Hunk_TempAlloc( length ) );
-		CopyExportNames( image, buffer );
-	}
-
-	UnmapViewOfFile( image );
-	CloseHandle( mapping );
-	CloseHandle( file );
-	*names = buffer;
-	return length;
-}
-
-static char* ConvertExportName( const char* exportName, char* output, int outputSize )
-{
-	int i;
-	int separators = 0;
-
-	for ( i = 1; i < outputSize; i++ )
-	{
-		output[i - 1] = exportName[i];
-		if ( exportName[i] == '@' )
-			separators++;
-		if ( separators >= 2 )
-		{
-			i++;
-			break;
-		}
-	}
-
-	output[i - 2] = '\0';
-	if ( i == outputSize )
-		Con_DPrintf( "Export name is too large\n" );
-
-	return output;
-}
-
-void BuildExportTable( extensiondll_t* pDll, const char* filename )
-{
-	char* names = NULL;
-	char convertedName[256];
-	int namesLength;
-	int count;
-	int nameBytes;
-	int offset;
-	int index;
-	char* output;
-
-	if ( !pDll || !filename )
-		return;
-
-	namesLength = GetExportNames( filename, &names );
-	pDll->functionTable = NULL;
-	pDll->functionCount = 0;
-	if ( !names )
-		return;
-
-	count = 0;
-	nameBytes = 0;
-	for ( offset = 0; offset < namesLength; offset += strlen( &names[offset] ) + 1 )
-	{
-		if ( names[offset] == '?' )
-		{
-			count++;
-			ConvertExportName( &names[offset], convertedName, sizeof( convertedName ) );
-			nameBytes += strlen( convertedName ) + 1;
-		}
-	}
-
-	pDll->functionCount = count;
-	pDll->functionTable = static_cast<functiontable_t*>( Mem_Malloc( nameBytes + sizeof( functiontable_t ) * count ) );
-	output = reinterpret_cast<char*>( &pDll->functionTable[count] );
-
-	index = 0;
-	for ( offset = 0; offset < namesLength; offset += strlen( &names[offset] ) + 1 )
-	{
-		if ( names[offset] == '?' )
-		{
-			ConvertExportName( &names[offset], output, namesLength - offset );
-			pDll->functionTable[index].pFunctionName = output;
-			pDll->functionTable[index].pFunction = static_cast<uint32>( reinterpret_cast<std::uintptr_t>( GetProcAddress( pDll->lDLLHandle, &names[offset] ) ) );
-			output += strlen( output ) + 1;
-			index++;
-		}
-	}
-}
+#include "export_table_impl.h"
 #endif
+
+namespace {
+
+#if defined(_WIN32)
+using GameLibraryHandle = HMODULE;
+#else
+using GameLibraryHandle = void *;
+#endif
+
+template<typename Function>
+Function GameLibrarySymbol(GameLibraryHandle library, const char *name) {
+#if defined(_WIN32)
+    return reinterpret_cast<Function>(GetProcAddress(library, name));
+#else
+    return reinterpret_cast<Function>(dlsym(library, name));
+#endif
+}
+
+bool InitializeOwnedGameModule(GameLibraryHandle library, const char *filename) {
+    const auto describe = GameLibrarySymbol<cse::abi::GetModuleAbi>(library, "CseGetModuleAbi");
+    const auto initialize = GameLibrarySymbol<CseInitializeGame>(library, "CseInitializeGameModule");
+    const auto status = cse::abi::Check(cse::abi::GameModuleDescriptor, describe ? describe() : nullptr);
+    if (!initialize || status != cse::abi::Compatibility::Compatible) {
+        Con_Printf("Game module ABI mismatch in %s (descriptor status %u)\n", filename,
+            static_cast<unsigned int>(status));
+        return false;
+    }
+    if (!initialize(&cse::abi::GameModuleDescriptor, &g_engfuncsExportedToDlls, &gGlobalVariables)) {
+        Con_Printf("Game module rejected engine ABI in %s\n", filename);
+        return false;
+    }
+    return true;
+}
+
+} // namespace
 
 void LoadThisDll( char* filename )
 {
@@ -733,15 +619,10 @@ void LoadThisDll( char* filename )
 		Con_Printf( "LoadLibrary failed on %s: %s\n", filename, error );
 		return;
 	}
-	using PFN_GiveFnptrsToDll = void ( * )( enginefuncs_t*, globalvars_t* );
-	PFN_GiveFnptrsToDll giveFunctions = reinterpret_cast<PFN_GiveFnptrsToDll>( dlsym( library, "GiveFnptrsToDll" ) );
-	if ( giveFunctions == nullptr )
-	{
-		Con_Printf( "Couldn't get GiveFnptrsToDll in %s\n", filename );
-		dlclose( library );
-		return;
-	}
-	giveFunctions( &g_engfuncsExportedToDlls, &gGlobalVariables );
+    if (!InitializeOwnedGameModule(library, filename)) {
+        dlclose(library);
+        return;
+    }
 	if ( g_iextdllMac == MAX_EXT_DLLS )
 	{
 		Con_Printf( "Too many DLLs, ignoring remainder\n" );
@@ -750,7 +631,7 @@ void LoadThisDll( char* filename )
 	}
 	extensiondll_t* dll = &g_rgextdll[g_iextdllMac++];
 	Q_memset( dll, 0, sizeof( *dll ) );
-	dll->lDLLHandle = reinterpret_cast<HINSTANCE>( library );
+	dll->lDLLHandle = library;
 #else
 	HMODULE library = static_cast<HMODULE>( FS_LoadLibrary( filename ) );
 	if ( !library )
@@ -759,16 +640,10 @@ void LoadThisDll( char* filename )
 		Con_Printf( "LoadLibrary failed on %s (%d)\n", filename, error );
 		return;
 	}
-	typedef void( __stdcall * PFN_GiveFnptrsToDll )( enginefuncs_t*, globalvars_t* );
-	PFN_GiveFnptrsToDll giveFunctions =
-		reinterpret_cast<PFN_GiveFnptrsToDll>( GetProcAddress( library, "GiveFnptrsToDll" ) );
-	if ( !giveFunctions )
-	{
-		Con_Printf( "Couldn't get GiveFnptrsToDll in %s\n", filename );
-		FreeLibrary( library );
-		return;
-	}
-	giveFunctions( &g_engfuncsExportedToDlls, &gGlobalVariables );
+    if (!InitializeOwnedGameModule(library, filename)) {
+        FreeLibrary(library);
+        return;
+    }
 	if ( g_iextdllMac == MAX_EXT_DLLS )
 	{
 		Con_Printf( "Too many DLLs, ignoring remainder\n" );
@@ -884,42 +759,7 @@ qboolean Voice_SetClientListening( int receiver, int sender, qboolean listen )
 namespace
 {
 constexpr int ALERT_BUFFER_SIZE = 1024;
-constexpr int FUNCTION_NAME_BUFFER_SIZE = 512;
 
-bool IsFunctionNameDigit( char character )
-{
-	return static_cast<unsigned char>( character - '0' ) <= 9;
-}
-
-const char* ConvertNameToLocalPlatform( const char* name )
-{
-	if ( std::strstr( name, "@" ) )
-		return name;
-	if ( name[0] != '_' || name[1] != 'Z' )
-		return "unknown";
-
-	char encodedName[FUNCTION_NAME_BUFFER_SIZE];
-	std::strncpy( encodedName, name + 3, sizeof( encodedName ) );
-	encodedName[sizeof( encodedName ) - 1] = '\0';
-	char* cursor = encodedName;
-	char* end = encodedName + std::strlen( encodedName );
-	const int classNameLength = std::atoi( encodedName );
-	while ( IsFunctionNameDigit( *cursor ) && cursor < end )
-		++cursor;
-	const char* className = cursor;
-	cursor += classNameLength;
-	const int methodNameLength = std::atoi( cursor );
-	*cursor = '\0';
-	do
-	{
-		++cursor;
-	} while ( IsFunctionNameDigit( *cursor ) && cursor < end );
-	cursor[methodNameLength] = '\0';
-
-	static char convertedName[FUNCTION_NAME_BUFFER_SIZE];
-	_snprintf( convertedName, sizeof( convertedName ), "%s@%s", cursor, className );
-	return convertedName;
-}
 }
 
 void AlertMessage( ALERT_TYPE type, char* format, ... )
@@ -972,58 +812,7 @@ void EngineFprintf( void*, char*, ... )
 	AlertMessage( at_console, const_cast<char*>( "EngineFprintf:  Obsolete API\n" ) );
 }
 
-uint32 FunctionFromName( const char* name )
-{
-	name = ConvertNameToLocalPlatform( name );
-	for ( int dllIndex = 0; dllIndex < g_iextdllMac; ++dllIndex )
-	{
-		const extensiondll_t& dll = g_rgextdll[dllIndex];
-		for ( int functionIndex = 0; functionIndex < dll.functionCount; ++functionIndex )
-		{
-			const functiontable_t& function = dll.functionTable[functionIndex];
-			if ( Q_strcmp( name, function.pFunctionName ) == 0 )
-			{
-				if ( function.pFunction )
-					return function.pFunction;
-				break;
-			}
-		}
-	}
-	Con_Printf( "Can't find proc: %s\n", name );
-	return 0;
-}
-
-const char* NameForFunction( uint32 address )
-{
-#if !defined( _WIN32 )
-	Dl_info info;
-	for ( int index = 0; index < g_iextdllMac; ++index )
-	{
-		if ( dladdr( reinterpret_cast<void*>( static_cast<std::uintptr_t>( address ) ), &info ) != 0
-			 && info.dli_sname != nullptr )
-			return info.dli_sname;
-	}
-	Con_Printf( "Can't find address: %08lx\n", static_cast<unsigned long>( address ) );
-	return nullptr;
-#else
-	for ( int dllIndex = 0; dllIndex < g_iextdllMac; ++dllIndex )
-	{
-		const extensiondll_t& dll = g_rgextdll[dllIndex];
-		for ( int functionIndex = 0; functionIndex < dll.functionCount; ++functionIndex )
-		{
-			const functiontable_t& function = dll.functionTable[functionIndex];
-			if ( function.pFunction == address )
-			{
-				if ( function.pFunctionName )
-					return function.pFunctionName;
-				break;
-			}
-		}
-	}
-	Con_Printf( "Can't find address: %08lx\n", static_cast<unsigned long>( address ) );
-	return nullptr;
-#endif
-}
+#include "symbol_lookup_impl.h"
 
 extern jmp_buf host_abortserver;
 extern SDL_Window** pmainwindow;
@@ -1445,34 +1234,6 @@ void ForceReloadProfile()
 	{
 		Cvar_Set( "name", communityName );
 	}
-}
-
-const char* FindAddressInTable( extensiondll_t* pDll, uint32 function )
-{
-#if defined( _WIN32 )
-	for ( int index = 0; index < pDll->functionCount; ++index )
-	{
-		if ( pDll->functionTable[index].pFunction == function )
-			return pDll->functionTable[index].pFunctionName;
-	}
-	return nullptr;
-#else
-	( void )pDll;
-	Dl_info info;
-	if ( dladdr( reinterpret_cast<void*>( static_cast<std::uintptr_t>( function ) ), &info ) == 0 )
-		return nullptr;
-	return info.dli_sname;
-#endif
-}
-
-uint32 FindNameInTable( extensiondll_t* pDll, const char* pName )
-{
-#if defined( _WIN32 )
-	FARPROC function = GetProcAddress( pDll->lDLLHandle, pName );
-#else
-	void* function = dlsym( reinterpret_cast<void*>( pDll->lDLLHandle ), pName );
-#endif
-	return static_cast<uint32>( reinterpret_cast<std::uintptr_t>( function ) );
 }
 
 FIELDIOFUNCTION GetIOFunction( char* pName )

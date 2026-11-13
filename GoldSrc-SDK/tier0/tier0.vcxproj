@@ -70,6 +70,8 @@
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <ExceptionHandling>Async</ExceptionHandling>
+      <!-- Portable C++ EH leaves fatal machine faults to the native OS crash reporter. -->
+      <CsePortableFaultPolicy>OsTermination</CsePortableFaultPolicy>
       <LanguageStandard>stdcpp14</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\public;$(ProjectDir)..</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_WINDOWS;TIER0_DLL;NOMINMAX;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -85,6 +87,8 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <ExceptionHandling>Async</ExceptionHandling>
+      <!-- Portable C++ EH leaves fatal machine faults to the native OS crash reporter. -->
+      <CsePortableFaultPolicy>OsTermination</CsePortableFaultPolicy>
       <LanguageStandard>stdcpp14</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\public;$(ProjectDir)..</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_WINDOWS;TIER0_DLL;NOMINMAX;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -116,6 +120,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\public\tier0\platform.h" />
+    <ClInclude Include="cpu_topology.h" />
     <ClInclude Include="..\public\tier0\dbg.h" />
     <ClInclude Include="..\public\tier0\fasttimer.h" />
     <ClInclude Include="..\public\tier0\threadtools.h" />

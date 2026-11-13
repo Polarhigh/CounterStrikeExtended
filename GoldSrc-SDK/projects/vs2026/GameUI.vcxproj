@@ -33,6 +33,7 @@
     <CodeAnalysisSucceededFile>$(IntDir)$(TargetName).lastcodeanalysissucceeded</CodeAnalysisSucceededFile>
   </PropertyGroup>
   <PropertyGroup><CseSdl3Shared>true</CseSdl3Shared></PropertyGroup>
+  <PropertyGroup><CseNativeWindowsLibraries>ws2_32.lib</CseNativeWindowsLibraries></PropertyGroup>
   <Import Project="SDL3.props" />
   <ItemDefinitionGroup>
     <ClCompile>
@@ -85,6 +86,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\common\legacy_wide_format.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>posix</CseTargetOS>
+      <ExceptionHandling>false</ExceptionHandling>
+      <FloatingPointModel>Precise</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\common\steam_service.cpp" />
     <ClCompile Include="..\..\GameUI\BackgroundMenuButton.cpp" />
     <ClCompile Include="..\..\GameUI\BasePanel.cpp" />
     <ClCompile Include="..\..\GameUI\BitmapButton.cpp" />
@@ -158,6 +166,41 @@
     <ClCompile Include="..\..\GameUI\TextEntryBox.cpp" />
     <ClCompile Include="..\..\GameUI\vcontrolslistpanel.cpp" />
     <ClCompile Include="..\..\GameUI\VGuiSystemModuleLoader.cpp" />
+    <ClCompile Include="..\..\GameUI\native\ServerBrowserModel.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="..\..\GameUI\native\ServerBrowserConfig.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="..\..\GameUI\native\ServerBrowserPresentation.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="..\..\GameUI\native\ServerBrowserConnection.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="..\..\GameUI\native\ServerBrowserDetails.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="..\..\GameUI\native\ServerBrowserDialog.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="..\..\GameUI\native\ServerBrowserModule.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\vgui2\controls\AnimatingImagePanel.cpp" />
@@ -204,8 +247,12 @@
     <ClCompile Include="..\..\vgui2\controls\Slider.cpp" />
     <ClCompile Include="..\..\vgui2\controls\TestScriptController.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>posix</CseTargetOS>
     </ClCompile>
     <ClCompile Include="..\..\vgui2\controls\TextEntry.cpp" />
+    <ClCompile Include="..\..\common\TextEntryClipboard.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
     <ClCompile Include="..\..\vgui2\controls\TextImage.cpp" />
     <ClCompile Include="..\..\vgui2\controls\ToggleButton.cpp" />
     <ClCompile Include="..\..\vgui2\controls\Tooltip.cpp" />
@@ -217,6 +264,12 @@
     <ClCompile Include="..\..\engine\utlbuffer.cpp" />
     <ClCompile Include="..\..\engine\utlsymbol.cpp" />
     <ClCompile Include="..\..\engine\BaseSystemModule.cpp" />
+    <ClCompile Include="..\..\common\native\BaseSystemModule.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CsePointerWidth>64</CsePointerWidth>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <CseReplaces>$(ProjectDir)..\..\engine\BaseSystemModule.cpp</CseReplaces>
+    </ClCompile>
     <ClCompile Include="..\..\common\ObjectList.cpp">
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\HLTV\DemoPlayer\private\HLTV\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -247,6 +300,15 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\public\html_legacy_interfaces.h" />
+    <ClInclude Include="..\..\public\html_key_codes.h" />
+    <ClInclude Include="..\..\public\html_key_modifiers.h" />
+    <ClInclude Include="..\..\public\native_module.h" />
+    <ClInclude Include="..\..\public\steam_provider.h" />
+    <ClInclude Include="..\..\public\steam_server_transport.h" />
+    <ClInclude Include="..\..\public\steam_service.h" />
+    <ClInclude Include="..\..\public\steam_service_names.h" />
+    <ClInclude Include="..\..\public\steam_module_initializer.h" />
     <ClInclude Include="..\..\GameUI\BackgroundMenuButton.h" />
     <ClInclude Include="..\..\GameUI\BasePanel.h" />
     <ClInclude Include="..\..\GameUI\BitmapButton.h" />
@@ -319,6 +381,13 @@
     <ClInclude Include="..\..\GameUI\TextEntryBox.h" />
     <ClInclude Include="..\..\GameUI\vcontrolslistpanel.h" />
     <ClInclude Include="..\..\GameUI\VGuiSystemModuleLoader.h" />
+    <ClInclude Include="..\..\GameUI\native\ServerBrowserModel.h" />
+    <ClInclude Include="..\..\GameUI\native\ServerBrowserConfig.h" />
+    <ClInclude Include="..\..\GameUI\native\ServerBrowserPresentation.h" />
+    <ClInclude Include="..\..\GameUI\native\ServerBrowserConnection.h" />
+    <ClInclude Include="..\..\GameUI\native\ServerBrowserDetails.h" />
+    <ClInclude Include="..\..\GameUI\native\ServerBrowserDialog.h" />
+    <ClInclude Include="..\..\GameUI\native\ServerBrowserModule.h" />
     <ClInclude Include="..\..\vgui2\controls\AnimatingImagePanel.h" />
     <ClInclude Include="..\..\vgui2\controls\BitmapImagePanel.h" />
     <ClInclude Include="..\..\vgui2\controls\BuildGroup.h" />
@@ -358,6 +427,7 @@
     <ClInclude Include="..\..\vgui2\controls\Slider.h" />
     <ClInclude Include="..\..\vgui2\controls\TestScriptController.h" />
     <ClInclude Include="..\..\vgui2\controls\TextEntry.h" />
+    <ClInclude Include="..\..\common\TextEntryClipboard.h" />
     <ClInclude Include="..\..\vgui2\controls\TextImage.h" />
     <ClInclude Include="..\..\vgui2\controls\ToggleButton.h" />
     <ClInclude Include="..\..\vgui2\controls\Tooltip.h" />

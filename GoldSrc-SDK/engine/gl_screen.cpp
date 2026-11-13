@@ -19,6 +19,10 @@
 #include <cstdio>
 #include <limits>
 
+#if !defined(_WIN32)
+#include "../common/cse_rect.h"
+#endif
+
 extern qboolean gfBackground;
 extern qboolean scr_skipupdate, scr_skiponeupdate, con_initialized;
 extern float scr_con_current, g_LastScreenUpdateTime;
@@ -365,7 +369,7 @@ void SCR_UpdateScreen()
 	{
 		if ( scr_showpause.value != 0.0f && cl.paused && !VGuiWrap2_IsGameUIVisible()
 			 && ( !g_bIsCZeroRitual || !gGlobalVariables.mapname || !pr_strings
-				  || Q_strcasecmp( pr_strings + gGlobalVariables.mapname, "cz_worldmap" ) != 0 ) )
+				  || Q_strcasecmp( CseStringAddress(pr_strings, gGlobalVariables.mapname), "cz_worldmap" ) != 0 ) )
 		{
 			Draw_Pic( glwidth / 2 - scr_paused->width / 2, glheight / 2 - scr_paused->height / 2, scr_paused );
 		}
@@ -403,8 +407,13 @@ void SCR_ScreenShot_f()
 	int height;
 	if ( bDoScaledFBO > 0 || VideoMode_IsWindowed() != 0 )
 	{
+#if defined(_WIN32)
 		width = static_cast<int>( window_rect.right - window_rect.left );
 		height = static_cast<int>( window_rect.bottom - window_rect.top );
+#else
+        width = cse_rect::Difference32(window_rect.right, window_rect.left);
+        height = cse_rect::Difference32(window_rect.bottom, window_rect.top);
+#endif
 	}
 	else
 	{
@@ -496,7 +505,7 @@ void SCR_DrawPause()
 {
 	if ( scr_showpause.value != 0.0f && cl.paused && !VGuiWrap2_IsGameUIVisible()
 		 && ( !g_bIsCZeroRitual || !gGlobalVariables.mapname || pr_strings == nullptr
-			  || Q_stricmp( pr_strings + gGlobalVariables.mapname, "cz_worldmap" ) != 0 ) )
+			  || Q_stricmp( CseStringAddress(pr_strings, gGlobalVariables.mapname), "cz_worldmap" ) != 0 ) )
 	{
 		Draw_Pic( glwidth / 2 - scr_paused->width / 2, glheight / 2 - scr_paused->height / 2, scr_paused );
 	}

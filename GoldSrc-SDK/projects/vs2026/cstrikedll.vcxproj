@@ -18,6 +18,7 @@
     <SourceDirectory>cstrike</SourceDirectory>
     <BinaryDirectory>dlls</BinaryDirectory>
     <TargetName>mp</TargetName>
+    <CseNativeModuleAliases>cs</CseNativeModuleAliases>
   </PropertyGroup>
   <Import Project="VisualStudio2026.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -35,6 +36,11 @@
     <ClCompile>
       <PreprocessorDefinitions>$([MSBuild]::Unescape($([System.String]::Copy(';%(PreprocessorDefinitions);').Replace(';NDEBUG;', ';').Trim(';'))));UTL_ENGINE_ASSERTS</PreprocessorDefinitions>
     </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <EnableCOMDATFolding>false</EnableCOMDATFolding>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <None Include="cstrikedll.def" />

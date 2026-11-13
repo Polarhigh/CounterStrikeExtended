@@ -45,8 +45,8 @@ public:
 
 	void EXPORT FieldUse( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
 
-	int m_iszXController;
-	int m_iszYController;
+	string_t m_iszXController;
+	string_t m_iszYController;
 	float m_flSpread;
 	float m_flDelay;
 	int m_iCount;
@@ -329,3 +329,5 @@ void CMortar::ShootTimed( EVARS *pevOwner, Vector vecStart, float time )
 	UTIL_SetOrigin( pMortar->pev, tr.vecEndPos );
 }
 #endif
+
+#include "generated_saved_callbacks/mortar.inc"

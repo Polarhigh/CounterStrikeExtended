@@ -1,12 +1,11 @@
 #pragma once
 
-#include <windows.h>
-#include <mmsystem.h>
-#include <unknwn.h>
+#include "platform_com.h"
 
 #include "ia3dapi.h"
 #include "listener.h"
 #include "LinkList.h"
+#include "native_geometry_identity.h"
 
 #define A3D_PRIMITIVE_COMPAT1009	0x10
 #define A3D_NAME_LENGTH			256

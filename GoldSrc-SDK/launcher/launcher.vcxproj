@@ -101,6 +101,11 @@
     <ClCompile Include="public\registry.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\public\cse_filesystem_abi.h" />
+    <ClInclude Include="..\public\cse_filesystem_methods.inc" />
+    <ClInclude Include="..\public\native_filesystem_module.h" />
+    <ClInclude Include="..\public\cse_module_abi.h" />
+    <ClInclude Include="..\public\native_module.h" />
     <ClInclude Include="common\icommandline.h" />
     <ClInclude Include="public\engine_launcher_api.h" />
     <ClInclude Include="public\filesystem.h" />
@@ -121,4 +126,23 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
+  <ItemGroup>
+    <ClCompile Include="native\MacRuntimeSession.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <ExceptionHandling>false</ExceptionHandling>
+    </ClCompile>
+    <ClCompile Include="native\SocketImageOwner.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <ExceptionHandling>false</ExceptionHandling>
+      <CsePointerWidth>64</CsePointerWidth>
+      <CseAppleMainImagePublisher>socket-v1</CseAppleMainImagePublisher>
+    </ClCompile>
+    <ClCompile Include="native\VGui1HostImageOwner.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <ExceptionHandling>false</ExceptionHandling>
+    </ClCompile>
+  </ItemGroup>
 </Project>

@@ -12,7 +12,7 @@
 
 #include "MenuButton.h"
 #include "Menu.h"
-#include "controls.h"
+#include "Controls.h"
 
 #include "vgui/IInput.h"
 #include "vgui/IVGui.h"
@@ -198,7 +198,7 @@ void MenuButton::OnCursorEntered()
 {
 	Button::OnCursorEntered();
 	KeyValues* message = new KeyValues( "CursorEnteredMenuButton" );
-	message->SetInt( "VPanel", GetVPanel() );
+	message->SetPtr( "VPanel", reinterpret_cast<void *>(GetVPanel()) );
 	ivgui()->PostMessage( GetVParent(), message, 0, 0.0f );
 }
 

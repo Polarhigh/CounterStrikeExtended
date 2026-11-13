@@ -1132,7 +1132,7 @@ int USENTENCEG_PickSequential(int isentenceg, char *szfound, int ipick, int fres
 
 	strcpy(szfound, "!");
 	strcat(szfound, szgroupname);
-	_itoa(ipick, sznum, 10);
+    snprintf(sznum, sizeof(sznum), "%d", ipick);
 	strcat(szfound, sznum);
 	
 	if (ipick >= count)
@@ -1185,7 +1185,7 @@ int USENTENCEG_Pick(int isentenceg, char *szfound)
 				plru[i] = 0xFF;
 				strcpy(szfound, "!");
 				strcat(szfound, szgroupname);
-				_itoa(ipick, sznum, 10);
+                snprintf(sznum, sizeof(sznum), "%d", ipick);
 				strcat(szfound, sznum);
 				return ipick;
 			}
@@ -1310,7 +1310,7 @@ void SENTENCEG_Stop(edict_t *entity, int isentenceg, int ipick)
 	
 	strcpy(buffer, "!");
 	strcat(buffer, rgsentenceg[isentenceg].szgroupname);
-	_itoa(ipick, sznum, 10);
+    snprintf(sznum, sizeof(sznum), "%d", ipick);
 	strcat(buffer, sznum);
 
 	STOP_SOUND(entity, CHAN_VOICE, buffer);
@@ -1459,7 +1459,7 @@ int SENTENCEG_Lookup(const char *sample, char *sentencenum)
 			if (sentencenum)
 			{
 				strcpy(sentencenum, "!");
-				_itoa(i, sznum, 10);
+                snprintf(sznum, sizeof(sznum), "%d", i);
 				strcat(sentencenum, sznum);
 			}
 			return i;
@@ -1721,7 +1721,7 @@ float TEXTURETYPE_PlaySound(TraceResult *ptr,  Vector vecSrc, Vector vecEnd, int
 		if (pEntity)
 			pTextureName = TRACE_TEXTURE( ENT(pEntity->pev), rgfl1, rgfl2 );
 		else
-			pTextureName = TRACE_TEXTURE( ENT(0), rgfl1, rgfl2 );
+			pTextureName = TRACE_TEXTURE( ENT(eoNullEntity), rgfl1, rgfl2 );
 			
 		if ( pTextureName )
 		{
@@ -1838,8 +1838,8 @@ float TEXTURETYPE_PlaySound(TraceResult *ptr,  Vector vecSrc, Vector vecEnd, int
 			float flVolume = RANDOM_FLOAT ( 0.7f , 1.0f );//random volume range
 			switch ( RANDOM_LONG(0,1) )
 			{
-				case 0: UTIL_EmitAmbientSound(ENT(0), ptr->vecEndPos, "buttons/spark5.wav", flVolume, ATTN_NORM, 0, 100); break;
-				case 1: UTIL_EmitAmbientSound(ENT(0), ptr->vecEndPos, "buttons/spark6.wav", flVolume, ATTN_NORM, 0, 100); break;
+				case 0: UTIL_EmitAmbientSound(ENT(eoNullEntity), ptr->vecEndPos, "buttons/spark5.wav", flVolume, ATTN_NORM, 0, 100); break;
+				case 1: UTIL_EmitAmbientSound(ENT(eoNullEntity), ptr->vecEndPos, "buttons/spark6.wav", flVolume, ATTN_NORM, 0, 100); break;
 				// case 0: EMIT_SOUND(ENT(pev), CHAN_VOICE, "buttons/spark5.wav", flVolume, ATTN_NORM);	break;
 				// case 1: EMIT_SOUND(ENT(pev), CHAN_VOICE, "buttons/spark6.wav", flVolume, ATTN_NORM);	break;
 			}
@@ -1849,7 +1849,7 @@ float TEXTURETYPE_PlaySound(TraceResult *ptr,  Vector vecSrc, Vector vecEnd, int
 	// play material hit sound
 	int pitch = 96 + RANDOM_LONG(0, 0xf);
 	int soundIndex = RANDOM_LONG(0, cnt - 1);
-	UTIL_EmitAmbientSound(ENT(0), ptr->vecEndPos, rgsz[soundIndex], fvol, fattn, 0, pitch);
+	UTIL_EmitAmbientSound(ENT(eoNullEntity), ptr->vecEndPos, rgsz[soundIndex], fvol, fattn, 0, pitch);
 	//EMIT_SOUND_DYN( ENT(m_pPlayer->pev), CHAN_WEAPON, rgsz[RANDOM_LONG(0,cnt-1)], fvol, ATTN_NORM, 0, 96 + RANDOM_LONG(0,0xf));
 			
 	return fvolbar;
@@ -2053,3 +2053,5 @@ void CSpeaker :: KeyValue( KeyValueData *pkvd )
 	else
 		CBaseEntity::KeyValue( pkvd );
 }
+
+#include "generated_saved_callbacks/sound.inc"

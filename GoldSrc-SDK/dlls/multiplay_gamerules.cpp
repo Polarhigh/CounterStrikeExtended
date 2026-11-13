@@ -1624,7 +1624,8 @@ void CHalfLifeMultiplay :: ChangeLevel( void )
 void CHalfLifeMultiplay :: SendMOTDToClient( edict_t *client )
 {
 	// read from the MOTD.txt file
-	int length, char_count = 0;
+	int length;
+    std::size_t char_count = 0;
 	char *pFileList;
 	char *aFileList = pFileList = (char*)LOAD_FILE_FOR_ME( (char *)CVAR_GET_STRING( "motdfile" ), &length );
 
@@ -1767,7 +1768,7 @@ void CMultiplayBusters::PlayerKilled( CBasePlayer* pVictim, entvars_t* pKiller, 
 
 		if ( peKiller )
 		{
-			UTIL_ClientPrintAll( HUD_PRINTTALK, UTIL_VarArgs( "%s has has killed the Buster!\n", STRING( (CBasePlayer*)peKiller->pev->netname ) ) );
+			UTIL_ClientPrintAll( HUD_PRINTTALK, UTIL_VarArgs( "%s has has killed the Buster!\n", STRING(peKiller->pev->netname) ) );
 		}
 
 		pVictim->pev->renderfx = kRenderFxNone;
@@ -1908,7 +1909,7 @@ void CMultiplayBusters::PlayerGotWeapon( CBasePlayer* pPlayer, CBasePlayerItem* 
 		pPlayer->RemoveAllItems( false );
 
 		UTIL_ClientPrintAll( HUD_PRINTCENTER, "Long live the new Buster!" );
-		UTIL_ClientPrintAll( HUD_PRINTTALK, UTIL_VarArgs( "%s is busting!\n", STRING( (CBasePlayer*)pPlayer->pev->netname ) ) );
+		UTIL_ClientPrintAll( HUD_PRINTTALK, UTIL_VarArgs( "%s is busting!\n", STRING(pPlayer->pev->netname) ) );
 
 		SetPlayerModel( pPlayer );
 

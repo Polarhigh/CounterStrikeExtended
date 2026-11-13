@@ -21,9 +21,9 @@
 #include "QueryBox.h"
 #include "ScrollBar.h"
 #include "TextEntry.h"
-#include "controls.h"
+#include "Controls.h"
 
-#include "color.h"
+#include "Color.h"
 #include "vgui/IBorder.h"
 #include "vgui/IInput.h"
 #include "vgui/IPanel.h"
@@ -32,10 +32,19 @@
 #include "vgui/ISystem.h"
 #include "vgui/IVGui.h"
 #include "vgui/KeyValues.h"
+#include "html_key_codes.h"
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+
+static int HTMLVirtualKey(vgui2::KeyCode code) {
+#if INTPTR_MAX > INT32_MAX
+    return cse::html::WindowsVirtualKey(code);
+#else
+    return vgui2::system()->KeyCode_VGUIToVirtualKey(code);
+#endif
+}
 
 int ConvertMouseCodeToCEFCode( vgui2::MouseCode code )
 {
@@ -54,6 +63,16 @@ int GetKeyModifiers()
 	if ( vgui2::input()->IsKeyDown( vgui2::KEY_LSHIFT ) || vgui2::input()->IsKeyDown( vgui2::KEY_RSHIFT ) )
 		modifiers |= 4;
 	return modifiers;
+}
+
+static int HTMLKeyModifiers(vgui2::KeyCode code) {
+    const int modifiers = GetKeyModifiers();
+#if INTPTR_MAX > INT32_MAX
+    return cse::html::KeyModifiers(code, modifiers);
+#else
+    (void)code;
+    return modifiers;
+#endif
 }
 
 namespace vgui2
@@ -144,10 +163,18 @@ void HTMLComboBoxHost::OnKillFocus()
 	}
 }
 
-void HTMLComboBoxHost::OnCursorMoved( int x, int y )
-{
-	if ( vgui2::input()->GetMouseOver() == GetVPanel() && m_pParent->m_Serializer )
-		m_pParent->m_Serializer->MouseMove( x, y );
+void HTMLComboBoxHost::OnCursorMoved(int x, int y) {
+    if (m_pParent == nullptr || m_pParent->m_Serializer == nullptr) {
+        return;
+    }
+    if (vgui2::input()->GetMouseOver() == GetVPanel()) {
+#if INTPTR_MAX > INT32_MAX
+        // Match the common widget: CEF routes OSR popup input in browser-view coordinates.
+        LocalToScreen(x, y);
+        m_pParent->ScreenToLocal(x, y);
+#endif
+        m_pParent->m_Serializer->MouseMove(x, y);
+    }
 }
 
 void HTMLComboBoxHost::OnMousePressed( vgui2::MouseCode code )
@@ -270,6 +297,9 @@ HTML::HTML( Panel* parent, const char* name, bool allowJavaScript, bool bPopupWi
 	m_iCopyLinkMenuItemID =
 		menu->AddMenuItem( "#vgui_HTMLCopyLink", new KeyValues( "Command", "command", "copylink" ), this, NULL );
 	menu->SetItemVisible( m_iCopyLinkMenuItemID, false );
+#if UINTPTR_MAX > UINT32_MAX
+    BrowserResize();
+#endif
 }
 
 HTML::~HTML()
@@ -708,8 +738,29 @@ void HTML::CalcScrollBars( int w, int h )
 		InvalidateLayout( false, false );
 }
 
+#if UINTPTR_MAX > UINT32_MAX
+void HTML::OnCseEffectiveVisibilityChanged() {
+    BrowserResize();
+}
+#endif
+
 void HTML::BrowserResize()
 {
+#if INTPTR_MAX > INT32_MAX
+    if (m_Serializer == nullptr) {
+        return;
+    }
+    for (VPANEL panel = GetVPanel(); panel != 0; panel = ipanel()->GetParent(panel)) {
+        if (!ipanel()->IsVisible(panel)) {
+            // Suspend hidden ancestry without changing local visibility or retained layout.
+            m_iWideLastHTMLSize = 0;
+            m_iTalLastHTMLSize = 0;
+            m_Serializer->SetFocus(false);
+            m_Serializer->BrowserSize(0, 0);
+            return;
+        }
+    }
+#endif
 	int wide = 0;
 	int tall = 0;
 	GetSize( wide, tall );
@@ -783,12 +834,15 @@ void HTML::BrowserFinishedRequest( const char* url, const char* pagetitle )
 	UpdateCachedHTMLValues();
 }
 
-void HTML::BrowserSizePopup( int x, int y, int wide, int tall )
-{
-	int absX = 0;
-	int absY = 0;
-	ipanel()->GetAbsPos( GetVPanel(), absX, absY );
-	m_pComboBoxHost->SetBounds( x + absX + 1, absY + y, wide, tall );
+void HTML::BrowserSizePopup(int x, int y, int wide, int tall) {
+    int absX = 0;
+    int absY = 0;
+    ipanel()->GetAbsPos(GetVPanel(), absX, absY);
+#if INTPTR_MAX > INT32_MAX
+    m_pComboBoxHost->SetBounds(x + absX, absY + y, wide, tall);
+#else
+    m_pComboBoxHost->SetBounds(x + absX + 1, absY + y, wide, tall);
+#endif
 }
 
 void HTML::OnMove()
@@ -882,9 +936,9 @@ void HTML::OnMouseReleased( MouseCode code )
 			{
 				KeyValues* drag = new KeyValues( "DragDrop" );
 				VPANEL mouseOver = input()->GetMouseOver();
-				if ( ipanel()->RequestInfo( mouseOver, drag ) && drag->GetInt( "AcceptPanel", 0 ) != 0 )
+				if ( ipanel()->RequestInfo( mouseOver, drag ) && drag->GetPtr( "AcceptPanel", nullptr ) != nullptr )
 				{
-					VPANEL accept = (VPANEL)drag->GetInt( "AcceptPanel", 0 );
+					VPANEL accept = reinterpret_cast<VPANEL>(drag->GetPtr("AcceptPanel", nullptr));
 					const char* url = m_sDragURL.m_pchString ? m_sDragURL.m_pchString : "";
 					ivgui()->PostMessage( accept, new KeyValues( "DragDrop", "text", url ), GetVPanel(), 0.0f );
 				}
@@ -1051,6 +1105,13 @@ void HTML::OpenURL( const char* URL, const char* postData, bool force )
 
 void HTML::BrowserReady()
 {
+#if INTPTR_MAX > INT32_MAX
+    if (m_Serializer == nullptr) {
+        return;
+    }
+    // Readiness may follow a change to the retained ancestry's visibility.
+    BrowserResize();
+#endif
 	char* url = m_sPendingURLLoad.m_pchString;
 	if ( !url )
 		return;
@@ -1092,7 +1153,12 @@ void HTML::ApplySchemeSettings( IScheme* scheme )
 void HTML::BrowserHorizontalScrollBarSizeResponse(
 	int x, int y, int wide, int tall, int scroll, int scroll_max, float zoom )
 {
+#if INTPTR_MAX > INT32_MAX
+    // Native responses describe the current geometry, including disappearance.
+    const bool wasTall = tall > 0;
+#else
 	bool wasTall = m_scrollHorizontal.m_nTall > 0;
+#endif
 	bool unchanged = wasTall == m_scrollHorizontal.m_bVisible && x == m_scrollHorizontal.m_nX
 					 && y == m_scrollHorizontal.m_nY && m_scrollHorizontal.m_nWide == wide
 					 && tall == m_scrollHorizontal.m_nTall && scroll_max == m_scrollHorizontal.m_nMax
@@ -1112,7 +1178,12 @@ void HTML::BrowserHorizontalScrollBarSizeResponse(
 void HTML::BrowserVerticalScrollBarSizeResponse(
 	int x, int y, int wide, int tall, int scroll, int scroll_max, float zoom )
 {
+#if INTPTR_MAX > INT32_MAX
+    // Native responses describe the current geometry, including disappearance.
+    const bool wasTall = tall > 0;
+#else
 	bool wasTall = m_scrollVertical.m_nTall > 0;
+#endif
 	bool unchanged = wasTall == m_scrollVertical.m_bVisible && x == m_scrollVertical.m_nX && y == m_scrollVertical.m_nY
 					 && m_scrollVertical.m_nWide == wide && tall == m_scrollVertical.m_nTall
 					 && scroll_max == m_scrollVertical.m_nMax && scroll == m_scrollVertical.m_nScroll;
@@ -1207,9 +1278,9 @@ bool HTML::FindDialogVisible()
 
 void HTML::OnKeyCodeReleased( KeyCode code )
 {
-	int virtualKey = system()->KeyCode_VGUIToVirtualKey( code );
+	int virtualKey = HTMLVirtualKey( code );
 	if ( m_Serializer )
-		m_Serializer->KeyUp( virtualKey, GetKeyModifiers() );
+		m_Serializer->KeyUp( virtualKey, HTMLKeyModifiers( code ) );
 }
 
 void HTML::OnKeyCodeTyped( KeyCode code )
@@ -1233,7 +1304,7 @@ void HTML::OnKeyCodeTyped( KeyCode code )
 				break;
 			}
 			if ( m_Serializer )
-				m_Serializer->KeyDown( system()->KeyCode_VGUIToVirtualKey( code ), GetKeyModifiers() );
+				m_Serializer->KeyDown( HTMLVirtualKey( code ), HTMLKeyModifiers( code ) );
 			return;
 		}
 		if ( code != KEY_F )
@@ -1241,7 +1312,7 @@ void HTML::OnKeyCodeTyped( KeyCode code )
 			if ( code != KEY_TAB )
 			{
 				if ( m_Serializer )
-					m_Serializer->KeyDown( system()->KeyCode_VGUIToVirtualKey( code ), GetKeyModifiers() );
+					m_Serializer->KeyDown( HTMLVirtualKey( code ), HTMLKeyModifiers( code ) );
 				return;
 			}
 		}
@@ -1252,7 +1323,7 @@ void HTML::OnKeyCodeTyped( KeyCode code )
 			else
 				HideFindDialog();
 			if ( m_Serializer )
-				m_Serializer->KeyDown( system()->KeyCode_VGUIToVirtualKey( code ), GetKeyModifiers() );
+				m_Serializer->KeyDown( HTMLVirtualKey( code ), HTMLKeyModifiers( code ) );
 			return;
 		}
 	}
@@ -1261,7 +1332,7 @@ void HTML::OnKeyCodeTyped( KeyCode code )
 	{
 		HideFindDialog();
 		if ( m_Serializer )
-			m_Serializer->KeyDown( system()->KeyCode_VGUIToVirtualKey( code ), GetKeyModifiers() );
+			m_Serializer->KeyDown( HTMLVirtualKey( code ), HTMLKeyModifiers( code ) );
 		return;
 	}
 	if ( input()->IsKeyDown( KEY_LCONTROL ) || input()->IsKeyDown( KEY_RCONTROL ) )
@@ -1270,7 +1341,7 @@ void HTML::OnKeyCodeTyped( KeyCode code )
 		return;
 	}
 	if ( m_Serializer )
-		m_Serializer->KeyDown( system()->KeyCode_VGUIToVirtualKey( code ), GetKeyModifiers() );
+		m_Serializer->KeyDown( HTMLVirtualKey( code ), HTMLKeyModifiers( code ) );
 }
 
 bool HTML::IsScrolledToBottom()
@@ -1329,11 +1400,17 @@ void HTML::GetLinkAtPosition( int x, int y )
 
 void HTML::UpdateSizeAndScrollBars()
 {
+#if INTPTR_MAX <= INT32_MAX
 	BrowserResize();
+#endif
 	int wide = 0;
 	int tall = 0;
 	GetSize( wide, tall );
 	CalcScrollBars( wide, tall );
+#if INTPTR_MAX > INT32_MAX
+    // Resize with the borders from this response, including their removal.
+    BrowserResize();
+#endif
 	InvalidateLayout( false, false );
 }
 

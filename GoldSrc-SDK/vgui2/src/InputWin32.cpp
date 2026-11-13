@@ -15,7 +15,7 @@
 #include "tier1/interface.h"
 
 #define UTLLINKEDLIST_SOURCE_PATH	L"c:\\buildslave\\goldsrc_win32\\build\\GoldSrc\\public\\UtlLinkedList.h"
-#include "UtlLinkedList.h"
+#include "utllinkedlist.h"
 
 #include "vgui_internal.h"
 #include "vgui/IClientPanel.h"
@@ -26,6 +26,7 @@
 #include <assert.h>
 #include <string.h>
 
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -33,6 +34,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include "NativeKeyState.h"
+#include <SDL3/SDL_keyboard.h>
+#include <cstdio>
+#include <cstdlib>
+#endif
 
 #include "buildslave_assert.h"
 #define ASSERT_FILE BUILDSLAVE_PATH( L"vgui2\\src\\InputWin32.cpp" )
@@ -40,7 +47,56 @@
 
 using namespace vgui2;
 
+#if defined(_WIN32)
 extern short System_GetKeyState( int virtualKeyCode );
+#else
+namespace {
+using cse_vgui2_input::VirtualKey;
+constexpr int VK_CAPITAL = static_cast<int>(VirtualKey::CapsLock);
+constexpr int VK_NUMLOCK = static_cast<int>(VirtualKey::NumLock);
+constexpr int VK_SCROLL = static_cast<int>(VirtualKey::ScrollLock);
+constexpr int VK_LSHIFT = static_cast<int>(VirtualKey::LeftShift);
+constexpr int VK_RSHIFT = static_cast<int>(VirtualKey::RightShift);
+constexpr int VK_LCONTROL = static_cast<int>(VirtualKey::LeftControl);
+constexpr int VK_RCONTROL = static_cast<int>(VirtualKey::RightControl);
+constexpr int VK_LMENU = static_cast<int>(VirtualKey::LeftAlt);
+constexpr int VK_RMENU = static_cast<int>(VirtualKey::RightAlt);
+constexpr int VK_MENU = static_cast<int>(VirtualKey::Alt);
+constexpr int VK_SHIFT = static_cast<int>(VirtualKey::Shift);
+constexpr int VK_CONTROL = static_cast<int>(VirtualKey::Control);
+
+[[noreturn]] void NativeInputFailure(const char* diagnostic) {
+    std::fputs("VGUI2 native input: ", stderr);
+    std::fputs(diagnostic, stderr);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+    std::abort();
+}
+
+cse_vgui2_input::Snapshot CaptureNativeKeyState() {
+#if defined(__APPLE__)
+    if (cse_vgui2_input::standaloneEventSnapshot) {
+        return *cse_vgui2_input::standaloneEventSnapshot;
+    }
+#endif
+    int count = 0;
+    const bool* down = SDL_GetKeyboardState(&count);
+    const SDL_Keymod modifiers = SDL_GetModState();
+    constexpr SDL_Scancode RequiredScancodes[] = {SDL_SCANCODE_CAPSLOCK, SDL_SCANCODE_NUMLOCKCLEAR,
+        SDL_SCANCODE_SCROLLLOCK, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_RSHIFT, SDL_SCANCODE_LCTRL,
+        SDL_SCANCODE_RCTRL, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT};
+    for (const auto scancode : RequiredScancodes) {
+        if (!down || count <= static_cast<int>(scancode)) {
+            NativeInputFailure("SDL keyboard snapshot does not contain the required scancodes");
+        }
+    }
+    return {down[SDL_SCANCODE_CAPSLOCK], down[SDL_SCANCODE_NUMLOCKCLEAR], down[SDL_SCANCODE_SCROLLLOCK],
+        down[SDL_SCANCODE_LSHIFT], down[SDL_SCANCODE_RSHIFT], down[SDL_SCANCODE_LCTRL], down[SDL_SCANCODE_RCTRL],
+        down[SDL_SCANCODE_LALT], down[SDL_SCANCODE_RALT], (modifiers & SDL_KMOD_CAPS) != 0,
+        (modifiers & SDL_KMOD_NUM) != 0, (modifiers & SDL_KMOD_SCROLL) != 0};
+}
+}
+#endif
 
 struct ToggleButton_t
 {
@@ -67,6 +123,11 @@ static ToggleButton_t s_ToggleButtons[] =
 
 class CInputWin32 : public IInputInternal
 {
+#if defined(__APPLE__)
+    friend void vgui2::ResetStandaloneMouseState();
+    friend void cse_vgui2_input::ApplyStandaloneModifiers(
+        const cse_vgui2_input::Snapshot& snapshot, bool leftCommandDown, bool rightCommandDown);
+#endif
 public:
 	CInputWin32();
 
@@ -161,6 +222,47 @@ private:
 };
 
 CInputWin32 g_Input;
+
+#if defined(__APPLE__)
+void cse_vgui2_input::ApplyStandaloneModifiers(
+    const Snapshot& snapshot, bool leftCommandDown, bool rightCommandDown) {
+    struct ModifierState {
+        KeyCode code;
+        bool down;
+    };
+    const ModifierState states[] = {
+        {KEY_LSHIFT, snapshot.leftShiftDown},
+        {KEY_RSHIFT, snapshot.rightShiftDown},
+        {KEY_LCONTROL, snapshot.leftControlDown},
+        {KEY_RCONTROL, snapshot.rightControlDown},
+        {KEY_LALT, snapshot.leftAltDown},
+        {KEY_RALT, snapshot.rightAltDown},
+        {KEY_LWIN, leftCommandDown},
+        {KEY_RWIN, rightCommandDown},
+        {KEY_CAPSLOCKTOGGLE, snapshot.capsLockToggled},
+        {KEY_NUMLOCKTOGGLE, snapshot.numLockToggled},
+        {KEY_SCROLLLOCKTOGGLE, snapshot.scrollLockToggled}
+    };
+    auto* context = g_Input.GetInputContext(g_Input.m_hContext);
+    for (const auto& state : states) {
+        context->_keyDown[state.code] = state.down;
+    }
+}
+
+void vgui2::ResetStandaloneMouseState() {
+    const auto clear = [](auto& context) {
+        memset(context._mousePressed, 0, sizeof(context._mousePressed));
+        memset(context._mouseDoublePressed, 0, sizeof(context._mouseDoublePressed));
+        memset(context._mouseDown, 0, sizeof(context._mouseDown));
+        memset(context._mouseReleased, 0, sizeof(context._mouseReleased));
+    };
+    clear(g_Input.m_DefaultInputContext);
+    for (int index = g_Input.m_Contexts.Head(); index != g_Input.m_Contexts.InvalidIndex();
+         index = g_Input.m_Contexts.Next(index)) {
+        clear(g_Input.m_Contexts[index]);
+    }
+}
+#endif
 
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CInputWin32, IInput, "VGUI_Input004", g_Input ); // export IInput to everyone else, not IInputInternal!
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CInputWin32, IInputInternal, "VGUI_InputInternal001", g_Input ); // for use in external surfaces only! (like the engine surface)
@@ -696,8 +798,18 @@ void CInputWin32::UpdateMouseFocus( int x, int y )
 
 		if ( !focus )
 		{
+#if UINTPTR_MAX > UINT32_MAX
+            VPanel *embedded = reinterpret_cast<VPanel *>(g_pSurface->GetEmbeddedPanel());
+            // Retirement detaches the root before the final deletion-dispatch turn.
+            // Continue below with no focus so modal checks and stale-focus clearing still run.
+            IClientPanel *client = embedded ? embedded->Client() : nullptr;
+            if (client) {
+                focus = reinterpret_cast<VPanel *>(client->IsWithinTraverse(x, y, false));
+            }
+#else
 			VPanel* embedded = (VPanel*)g_pSurface->GetEmbeddedPanel();
 			focus = (VPanel*)embedded->Client()->IsWithinTraverse( x, y, false );
+#endif
 		}
 	}
 
@@ -877,10 +989,14 @@ void CInputWin32::SetCursorPos( int x, int y )
 		return;
 	}
 
+#if defined(_WIN32)
 	// translate into coordinates relative to surface
 	int px, py, pw, pt;
 	g_pSurface->GetAbsoluteWindowBounds( px, py, pw, pt );
 	::SetCursorPos( px + x, py + y );
+#else
+    NativeInputFailure("SurfaceSetCursorPos requires native provider cursor functions");
+#endif
 }
 
 void CInputWin32::GetCursorPos( int& x, int& y )
@@ -891,6 +1007,7 @@ void CInputWin32::GetCursorPos( int& x, int& y )
 		return;
 	}
 
+#if defined(_WIN32)
 	// get mouse position in windows
 	POINT pnt;
 	::GetCursorPos( &pnt );
@@ -902,6 +1019,9 @@ void CInputWin32::GetCursorPos( int& x, int& y )
 	g_pSurface->GetAbsoluteWindowBounds( px, py, pw, pt );
 	x -= px;
 	y -= py;
+#else
+    NativeInputFailure("SurfaceGetCursorPos requires native provider cursor functions");
+#endif
 }
 
 void CInputWin32::UpdateToggleButtonState()
@@ -919,11 +1039,22 @@ void CInputWin32::UpdateToggleButtonState()
 
 	_updateToggleButtonState = false;
 
+#if !defined(_WIN32)
+    const auto snapshot = CaptureNativeKeyState();
+#endif
+
 	for ( int i = 0; i < (int)( sizeof( s_ToggleButtons ) / sizeof( s_ToggleButtons[0] ) ); i++ )
 	{
 		KeyCode code = s_ToggleButtons[i].code;
 		bool vguiState = IsKeyDown( code );
+#if defined(_WIN32)
 		unsigned short winState = (unsigned short)System_GetKeyState( s_ToggleButtons[i].virtualKey );
+#else
+        std::uint16_t winState = 0;
+        if (!cse_vgui2_input::TryGetKeyState(snapshot, s_ToggleButtons[i].virtualKey, winState)) {
+            NativeInputFailure("unrecognized native toggle-table virtual key");
+        }
+#endif
 
 		unsigned char winByte;
 		if ( i < 3 )

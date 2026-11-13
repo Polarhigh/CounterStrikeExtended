@@ -38,6 +38,7 @@
     <IntDir>$(ProjectDir)..\bin\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
     <TargetName>vgui2</TargetName>
     <TargetExt>.dll</TargetExt>
+    <CseNativeSdl3>true</CseNativeSdl3>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -82,6 +83,17 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\common\legacy_wide_format.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>posix</CseTargetOS>
+      <ExceptionHandling>false</ExceptionHandling>
+      <FloatingPointModel>Precise</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="vgui_surfacelib\native\MacFontDiscovery.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <CseNativeServices>fonts</CseNativeServices>
+    </ClCompile>
     <ClCompile Include="src\Bitmap.cpp" />
     <ClCompile Include="src\Border.cpp" />
     <ClCompile Include="src\fileimage.cpp" />
@@ -115,6 +127,14 @@
     <ClCompile Include="vgui_surfacelib\linuxfont.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\common\legacy_text_encoding.h" />
+    <ClInclude Include="vgui_surfacelib\native\MacFontDiscovery.h" />
+    <ClInclude Include="vgui_surfacelib\native\MacFontRegistration.h" />
+    <ClInclude Include="..\public\native_module.h" />
+    <ClInclude Include="src\NativeKeyState.h" />
+    <ClInclude Include="src\native\StandaloneWindow.h" />
+    <ClInclude Include="src\native\StandaloneRaster.h" />
+    <ClInclude Include="..\public\native_standalone_abi.h" />
     <ClInclude Include="src\Bitmap.h" />
     <ClInclude Include="src\Border.h" />
     <ClInclude Include="src\fileimage.h" />
@@ -126,6 +146,7 @@
     <ClInclude Include="..\public\characterset.h" />
     <ClInclude Include="..\public\interface_registry.h" />
     <ClInclude Include="src\public\Color.h" />
+    <ClInclude Include="src\public\cse_color.h" />
     <ClInclude Include="src\public\FileSystem.h" />
     <ClInclude Include="src\public\filesystem_helpers.h" />
     <ClInclude Include="src\public\IClientPanel.h" />
@@ -171,7 +192,40 @@
     <ClInclude Include="vgui_surfacelib\LinuxFont.h" />
     <ClInclude Include="src\VGuiKeyValues.h" />
     <ClInclude Include="src\VPanel.h" />
+    <ClInclude Include="src\window_panel_handle.h" />
     <ClInclude Include="src\VPanelWrapper.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ItemGroup>
+    <ClCompile Include="src\SurfaceSDL.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <CseReplaces>$(ProjectDir)src\Surface.cpp</CseReplaces>
+    </ClCompile>
+    <ClCompile Include="src\native\StandaloneWindow.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="src\native\StandaloneRaster.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="src\SystemMac.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+      <CseReplaces>$(ProjectDir)src\System.cpp</CseReplaces>
+    </ClCompile>
+    <ClCompile Include="src\NativeSystemClock.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="src\NativeClipboard.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+    <ClCompile Include="..\common\mac_settings_store.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+      <CseTargetOS>macos</CseTargetOS>
+    </ClCompile>
+  </ItemGroup>
 </Project>

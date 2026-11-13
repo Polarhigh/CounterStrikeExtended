@@ -325,7 +325,7 @@ public:
 	void SecondaryAttack( void );
 	BOOL Deploy( void );
 	void Holster( int skiplocal = 0 );
-	int m_iszModel;
+	string_t m_iszModel;
 	int m_iModel;
 
 #ifdef _MSC_VER
@@ -486,3 +486,5 @@ void CWreckage::Think( void )
 		WRITE_BYTE( RANDOM_LONG(0, 3) + 8  ); // framerate
 	MESSAGE_END();
 }
+
+#include "generated_saved_callbacks/h_cycler.inc"

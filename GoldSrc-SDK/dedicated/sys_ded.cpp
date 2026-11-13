@@ -1,4 +1,5 @@
 #include "sys_ded.h"
+#include "DedicatedResult.h"
 #include "CreateMultiplayerGameServerPage.h"
 #include "console/conproc.h"
 #include "../common/icommandline.h"
@@ -6,6 +7,7 @@
 #include "../common/IManageServer.h"
 #include "../common/TextConsoleWin32.h"
 #include "../public/FileSystem.h"
+#include "../public/native_filesystem_module.h"
 #include "../public/idedicatedexports.h"
 #include "../GameUI/common/IVGuiModule.h"
 #include "../vgui2/controls/Controls.h"
@@ -34,16 +36,7 @@ extern "C" _ACRTIMP void __cdecl _wassert( const wchar_t* expression, const wcha
 	unsigned int line );
 #endif
 
-class IDedicatedServerAPI : public IBaseInterface
-{
-public:
-	virtual bool Init( char* basedir, char* command, CreateInterfaceFn launcherFactory,
-		CreateInterfaceFn filesystemFactory ) = 0;
-	virtual int Shutdown() = 0;
-	virtual bool RunFrame() = 0;
-	virtual void AddConsoleText( char* text ) = 0;
-	virtual void UpdateStatus( float* fps, int* activePlayers, int* maxPlayers, char* map ) = 0;
-};
+#include "../public/dedicated_api.h"
 
 class CDedicatedExports : public IDedicatedExports
 {
@@ -380,6 +373,7 @@ int RunServer()
 			}
 		}
 
+        result = engineAPI->Shutdown();
 		if ( g_bVGUI )
 		{
 			vgui2::ivgui()->RunFrame();
@@ -390,11 +384,10 @@ int RunServer()
 		}
 		else
 		{
-			FreeConsole();
 			DeinitConProc();
+			FreeConsole();
 			console.ShutDown();
 		}
-		result = engineAPI->Shutdown();
 		Sys_UnloadModule( engineModule );
 		if ( g_pMainPanel )
 			SetEvent( g_pMainPanel->m_hEvent );
@@ -467,9 +460,13 @@ int Main( int, wchar_t** )
 	}
 	Sys_Sleep = Sys_SleepMilliseconds;
 	filesystemModule = Sys_LoadModule( "filesystem_stdio.dll" );
-	filesystemFactory = Sys_GetFactory( filesystemModule );
-	if ( !filesystemFactory )
-		return -1;
+    filesystemFactory = cse::filesystem_abi::CheckedFactory(filesystemModule);
+    if (!filesystemFactory) {
+        fputs("Incompatible owned filesystem module.\n", stderr);
+        Sys_UnloadModule(filesystemModule);
+        filesystemModule = nullptr;
+        return -1;
+    }
 	pFileSystem = (IFileSystem*)filesystemFactory( "VFileSystem009", NULL );
 	if ( !pFileSystem )
 		return -1;
@@ -480,7 +477,14 @@ int Main( int, wchar_t** )
 		g_bVGUI = false;
 	if ( g_bVGUI )
 	{
-		InitVGUI();
+        if (InitVGUI() != 0) {
+            pFileSystem->Unmount();
+            Sys_UnloadModule(vguiModule);
+            Sys_UnloadModule(engineModule);
+            Sys_UnloadModule(filesystemModule);
+            WSACleanup();
+            return -1;
+        }
 	}
 	else
 	{
@@ -506,8 +510,10 @@ int Main( int, wchar_t** )
 		while ( g_pMainPanel->m_bWaiting && vgui2::ivgui()->IsRunning() )
 			vgui2::ivgui()->RunFrame();
 	}
-	if ( !g_bVGUI || !g_pMainPanel->m_bQuit )
-		RunServer();
+    int result = 0;
+    if (!g_bVGUI || !g_pMainPanel->m_bQuit) {
+        result = RunServer();
+    }
 	if ( gpszCvars )
 		free( gpszCvars );
 	if ( pFileSystem )
@@ -519,7 +525,7 @@ int Main( int, wchar_t** )
 		hDLLThirdParty = NULL;
 	}
 	WSACleanup();
-	return 0;
+	return cse::dedicated::ProcessResult(result);
 }
 
 static void LaunchSteam( const char* command )

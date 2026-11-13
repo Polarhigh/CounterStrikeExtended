@@ -8,13 +8,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined( _WIN32 )
+#include "common/VGui1LegacyTickMillis.h"
+#endif
+
 namespace vgui
 {
 
-#if defined( _WIN32 )
 namespace
 {
+#if defined( _WIN32 )
 const char* staticKeyTrans[KEY_LAST];
+#endif
 const char* const keyTranslations[KEY_LAST] =
 {
 	"0)KEY_0", "1!KEY_1", "2@KEY_2", "3#KEY_3", "4$KEY_4",
@@ -43,7 +48,6 @@ const char* const keyTranslations[KEY_LAST] =
 	"\0\0KEY_F10", "\0\0KEY_F11", "\0\0KEY_F12"
 };
 }
-#endif
 
 App* App::_instance = NULL;
 
@@ -74,7 +78,11 @@ void App::init()
 	_buildMode = false;
 	_wantedBuildMode = false;
 	_cursorOveride = NULL;
+#if defined( _WIN32 )
 	_nextTickMillis = getTimeMillis();
+#else
+    _nextTickMillis = detail::NormalizeTickMillis(getTimeMillis());
+#endif
 	_minimumTickMillisInterval = 50;
 
 	memset( _mousePressed, 0, sizeof( _mousePressed ) );
@@ -127,8 +135,14 @@ void App::externalTick()
 
 void App::internalTick()
 {
+#if defined( _WIN32 )
 	if ( getTimeMillis() < _nextTickMillis )
 		return;
+#else
+    if (detail::NormalizeTickMillis(getTimeMillis()) < _nextTickMillis) {
+        return;
+    }
+#endif
 
 	platTick();
 
@@ -219,7 +233,11 @@ void App::internalTick()
 		}
 	}
 
+#if defined( _WIN32 )
 	_nextTickMillis = _minimumTickMillisInterval + getTimeMillis();
+#else
+    _nextTickMillis = detail::AddTickMillis(getTimeMillis(), _minimumTickMillisInterval);
+#endif
 }
 
 void App::internalCursorMoved( int x, int y, SurfaceBase* surfaceBase )
@@ -505,17 +523,29 @@ void App::getKeyCodeText( KeyCode code, char* buf, int buflen )
 	}
 }
 #else
-char App::getKeyCodeChar( KeyCode, bool )
-{
-	return '\0';
+char App::getKeyCodeChar(KeyCode code, bool shifted) {
+    if (static_cast<unsigned int>(code) >= KEY_LAST) {
+        return '\0';
+    }
+    return keyTranslations[code][shifted ? 1 : 0];
 }
 
-void App::getKeyCodeText( KeyCode, char* buf, int buflen )
-{
-	if ( buf != NULL && buflen > 0 )
-	{
-		buf[0] = '\0';
-	}
+void App::getKeyCodeText(KeyCode code, char* buffer, int capacity) {
+    if (!buffer || capacity <= 0) {
+        return;
+    }
+    buffer[0] = '\0';
+    if (static_cast<unsigned int>(code) >= KEY_LAST) {
+        return;
+    }
+    constexpr int KeyNameOffset = 2;
+    const char* name = keyTranslations[code] + KeyNameOffset;
+    int written = 0;
+    while (written + 1 < capacity && name[written]) {
+        buffer[written] = name[written];
+        ++written;
+    }
+    buffer[written] = '\0';
 }
 #endif
 

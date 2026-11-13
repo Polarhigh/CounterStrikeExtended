@@ -30,6 +30,7 @@ typedef unsigned char byte;
 #include "progdefs.h"
 #include "edict.h"
 #include "eiface.h"
+#include "cse_export.h"
 
 #include "studio.h"
 #include "com_model.h"
@@ -72,7 +73,7 @@ void SV_StudioSetupBones( model_t *pModel, float frame, int sequence,
 
 sv_blending_interface_t svBlending = { SV_BLENDING_INTERFACE_VERSION, SV_StudioSetupBones };
 
-extern "C" __declspec(dllexport) int Server_GetBlendingInterface( int version,
+extern "C" CSE_PUBLIC_EXPORT int Server_GetBlendingInterface( int version,
 	sv_blending_interface_t **ppinterface, server_studio_api_t *pstudio,
 	float (*rotationmatrix)[3][4], float (*bonetransform)[128][3][4] )
 {
@@ -639,7 +640,8 @@ void SequencePrecache( void *pmodel, const char *pSequenceName )
 					ALERT( at_error, "Bad sound event %d in sequence %s :: %s (sound is \"%s\")\n", pevent[i].event, pstudiohdr->name, pSequenceName, pevent[i].options );
 				}
 
-				PRECACHE_SOUND( (char *)(gpGlobals->pStringBase + ALLOC_STRING(pevent[i].options) ) );
+                PRECACHE_SOUND(const_cast<char *>(CseStringAddress(gpGlobals->pStringBase,
+                    ALLOC_STRING(pevent[i].options))));
 			}
 		}
 	}

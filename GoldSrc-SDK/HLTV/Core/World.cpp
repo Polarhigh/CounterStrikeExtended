@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 #define MAX_WORLD_CLIENT_INDEX		( MAX_WORLD_CLIENTS - 1 )
 #define MAX_WORLD_ENTITY_INDEX		( MAX_WORLD_ENTITIES - 1 )
@@ -22,7 +23,8 @@
 #define WORLD_SIGNON_BYTES			0x8000
 #define WORLD_SERVERINFO_BYTES		0x200
 #define WORLD_CACHE_ENTRIES			32
-#define WORLD_DEMOINFO_BYTES		436
+constexpr unsigned int WorldDemoInfoBytes = static_cast<unsigned int>(sizeof(demo_info_t));
+constexpr unsigned int WorldFrameStoragePaddingBytes = sizeof(std::uint32_t);
 
 #define WORLD_ENTITY_SENTINEL		9999
 #define WORLD_EMPTY_ENTITY_TYPE		0x40000000
@@ -1170,20 +1172,18 @@ int World::CompressFrame( frame_t* from, BitBuffer* stream )
 	return (int)( stream->currentByte - start );
 }
 
-void World::ClearEntityCache()
-{
-	int i;
-
-	if ( deltaCache != NULL )
-	{
-		for ( i = 0; i < maxCacheIndex; ++i )
-			deltaCache[i].buffer.Free();
-		memset( deltaCache, 0, sizeof( deltaCache_t ) * maxCacheIndex );
-	}
-	if ( frameCache != NULL )
-		memset( frameCache, 0, sizeof( frameCache_t ) * maxCacheIndex );
-	cacheHits = 1;
-	cacheFaults = 1;
+void World::ClearEntityCache() {
+    if (deltaCache != nullptr) {
+        for (int index = 0; index < maxCacheIndex; ++index) {
+            deltaCache[index].~deltaCache_t();
+            new (&deltaCache[index]) deltaCache_t();
+        }
+    }
+    if (frameCache != nullptr) {
+        memset(frameCache, 0, sizeof(frameCache_t) * maxCacheIndex);
+    }
+    cacheHits = 1;
+    cacheFaults = 1;
 }
 
 bool World::GetFrameFromCache( unsigned int seqNr, entity_state_t** entities )
@@ -1697,8 +1697,17 @@ bool World::Init( IBaseSystem* system, int serial, char* name )
 	unsigned int frameBytes;
 
 	BaseSystemModule::Init( system, serial, name );
+#if CSE_NATIVE_SYSTEM_MODULE
+    frameCache = nullptr;
+    deltaCache = nullptr;
+    maxCacheIndex = 0;
+#endif
+#if CSE_NATIVE_SYSTEM_MODULE
+    state = WORLD_INITILAZING;
+#else
 	if ( state != WORLD_INITILAZING )
 		state = WORLD_INITILAZING;
+#endif
 	if ( name != NULL )
 		SetName( name );
 	else
@@ -1728,6 +1737,11 @@ bool World::Init( IBaseSystem* system, int serial, char* name )
 	}
 	frameCache = (frameCache_t*)Mem_ZeroMalloc( frameBytes );
 	deltaCache = (deltaCache_t*)Mem_ZeroMalloc( sizeof( deltaCache_t ) * (unsigned int)maxCacheIndex );
+    if (deltaCache != nullptr) {
+        for (int index = 0; index < maxCacheIndex; ++index) {
+            new (&deltaCache[index]) deltaCache_t();
+        }
+    }
 	if ( frameCache == NULL || deltaCache == NULL )
 	{
 		m_System->Errorf( "World::Init: Not enough memory for caches. Reduce -cachesize.\n" );
@@ -1743,6 +1757,12 @@ bool World::Init( IBaseSystem* system, int serial, char* name )
 
 void World::ShutDown()
 {
+#if CSE_NATIVE_SYSTEM_MODULE
+    if (m_NativeShuttingDown) {
+        return;
+    }
+    m_NativeShuttingDown = true;
+#endif
 	if ( m_State == 4 )
 		return;
 	Reset();
@@ -1751,11 +1771,13 @@ void World::ShutDown()
 	FireSignal( 8u, NULL );
 	DELTA_Shutdown();
 	m_Listener.Clear( false );
-	if ( deltaCache != NULL )
-	{
-		free( deltaCache );
-		deltaCache = NULL;
-	}
+    if (deltaCache != nullptr) {
+        for (int index = 0; index < maxCacheIndex; ++index) {
+            deltaCache[index].~deltaCache_t();
+        }
+        free(deltaCache);
+        deltaCache = nullptr;
+    }
 	if ( frameCache != NULL )
 	{
 		free( frameCache );
@@ -2008,7 +2030,7 @@ int World::AddFrame( frame_t* newFrame )
 
 	bytes = newFrame->clientDataSize + newFrame->eventsSize + newFrame->reliableDataSize +
 		newFrame->unreliableDataSize + newFrame->voiceDataSize + packed + newFrame->demoDataSize +
-		newFrame->userMessagesSize + ( newFrame->demoInfo == NULL ? 4u : 440u );
+		newFrame->userMessagesSize + WorldFrameStoragePaddingBytes + (newFrame->demoInfo == nullptr ? 0u : WorldDemoInfoBytes);
 	data = (unsigned char*)malloc( bytes );
 	cursor = data;
 	currentFrame->delta = WORLD_FULLFRAME_DELTA;
@@ -2074,7 +2096,7 @@ int World::AddFrame( frame_t* newFrame )
 	}
 	if ( newFrame->demoInfo != NULL )
 	{
-		memcpy( cursor, newFrame->demoInfo, WORLD_DEMOINFO_BYTES );
+		memcpy( cursor, newFrame->demoInfo, WorldDemoInfoBytes );
 		currentFrame->demoInfo = cursor;
 	}
 
