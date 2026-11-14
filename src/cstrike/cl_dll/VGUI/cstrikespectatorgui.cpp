@@ -5,6 +5,9 @@
 // $NoKeywords: $
 //=============================================================================
 
+#include <algorithm>
+#include <cwchar>
+#include "extended_stats.h"
 #include "hud.h"
 #include "cl_util.h"
 #include "cstrikespectatorgui.h"
@@ -12,6 +15,9 @@
 #include "game_controls/iviewport.h"
 #include "hud_iga.h"
 #include "Label.h"
+#include "Controls.h"
+#include "ComboBox.h"
+#include "vgui/ILocalize.h"
 #include <stdio.h>
 #include <wchar.h>
 
@@ -223,4 +229,90 @@ void CCSSpectatorGUI::Update( const char* serverName, int player, int mode,
 		SetLabelText( "extrainfo", text );
 	}
 	SizeControls();
+}
+
+void CCSSpectatorGUI::GetPlayerLabelText(int player, wchar_t* text, int textLength) {
+    using namespace cse::extstats;
+    m_statsArmor = {};
+    if (!text || textLength < static_cast<int>(sizeof(wchar_t))) {
+        return;
+    }
+    CSpectatorGUI::GetPlayerLabelText(player, text, textLength);
+    const Value armor = ClientStats().Get(Stat::Armor, player);
+    if (!armor.valid) {
+        return;
+    }
+    const VGuiLibraryPlayer_t info = gViewPortInterface->GetClientDllInterface()->CallEnghudGetPlayerInfo(player);
+    if (!info.name) {
+        return;
+    }
+    constexpr int SafeNameBytes = 256;
+    char safeName[SafeNameBytes] = {};
+    gViewPortInterface->MakeSafeName(info.name, safeName, sizeof(safeName));
+    vgui2::localize()->ConvertANSIToUnicode(safeName, m_statsName, sizeof(m_statsName));
+    m_statsName[StatsNameCharacters - 1] = 0;
+    m_statsHealth = ClientStats().Get(Stat::Health, player);
+    m_statsArmor = armor;
+    FormatStatsLabel(text, textLength);
+}
+
+void CCSSpectatorGUI::FormatStatsLabel(wchar_t* text, int textLength) const {
+    using namespace cse::extstats;
+    const int capacity = textLength / static_cast<int>(sizeof(wchar_t));
+    if (!text || capacity < 1) {
+        return;
+    }
+    const Value health = m_statsHealth;
+    const Value armor = m_statsArmor;
+    constexpr int NameCharacters = StatsNameCharacters;
+    constexpr int NumberCharacters = 16;
+    constexpr int FormattedCharacters = 256;
+    wchar_t name[NameCharacters] = {};
+    wchar_t healthText[NumberCharacters] = {};
+    wchar_t armorText[NumberCharacters] = {};
+    wchar_t formatted[FormattedCharacters] = {};
+    std::wcsncpy(name, m_statsName, StatsNameCharacters - 1);
+    std::swprintf(healthText, NumberCharacters, L"%d", DisplayAmount(health.amount));
+    std::swprintf(armorText, NumberCharacters, L"%d", DisplayAmount(armor.amount));
+    const char* token = health.valid ? "#CSEStats_SpectatorHealthArmor" : "#CSEStats_SpectatorArmor";
+    wchar_t fallbackHealthArmor[] = L"%s1 | HP %s2 | AP %s3";
+    wchar_t fallbackArmor[] = L"%s1 | AP %s2";
+    wchar_t* pattern = vgui2::localize()->Find(token);
+    if (!pattern) {
+        pattern = health.valid ? fallbackHealthArmor : fallbackArmor;
+    }
+    auto format = [&]() {
+        if (health.valid) {
+            vgui2::localize()->ConstructString(formatted, sizeof(formatted), pattern, 3,
+                name, healthText, armorText);
+        } else {
+            vgui2::localize()->ConstructString(formatted, sizeof(formatted), pattern, 2, name, armorText);
+        }
+    };
+    format();
+    const int length = static_cast<int>(std::wcslen(formatted));
+    if (length >= capacity) {
+        const int nameLength = static_cast<int>(std::wcslen(name));
+        const int shorten = (std::min)(nameLength, length - capacity + 1);
+        name[nameLength - shorten] = 0;
+        format();
+    }
+    std::wcsncpy(text, formatted, capacity - 1);
+    text[capacity - 1] = 0;
+}
+
+
+void CCSSpectatorGUI::RefreshLanguage() {
+    CSpectatorGUI::RefreshLanguage();
+    if (!m_statsArmor.valid) {
+        return;
+    }
+    // Replay only owned presentation inputs, including after the entity has disconnected.
+    wchar_t text[80] = {};
+    FormatStatsLabel(text, sizeof(text));
+    SetLabelText("playerlabel", text);
+    vgui2::ComboBox* combo = dynamic_cast<vgui2::ComboBox*>(FindChildByName("playercombo", true));
+    if (combo) {
+        combo->TextEntry::SetText(text);
+    }
 }
