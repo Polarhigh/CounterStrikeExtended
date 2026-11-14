@@ -1,5 +1,6 @@
 # Authoritative CMake build definition; edit this file directly.
 target_sources(hw_engine PRIVATE
+  "${CSE_SDK_DIR}/common/image_codec.cpp"
   "${CSE_SDK_DIR}/common/interface_language_preference.cpp"
   "${CSE_SDK_DIR}/engine/localization.cpp"
   "${CSE_SDK_DIR}/engine/tmessage_localization.cpp"
@@ -20,6 +21,7 @@ target_sources(hw_engine PRIVATE
   "${CSE_SDK_DIR}/engine/cl_extrap.cpp"
   "${CSE_SDK_DIR}/engine/cl_main.cpp"
   "${CSE_SDK_DIR}/engine/cl_parse.cpp"
+  "${CSE_SDK_DIR}/engine/image_consistency.cpp"
   "${CSE_SDK_DIR}/engine/cl_parsefn.cpp"
   "${CSE_SDK_DIR}/engine/cl_pmove.cpp"
   "${CSE_SDK_DIR}/engine/cl_pred.cpp"

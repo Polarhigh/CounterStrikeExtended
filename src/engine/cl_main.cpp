@@ -6,6 +6,7 @@
 #endif
 
 #include "client.h"
+#include "image_consistency.h"
 #include "pm_defs.h"
 #include "common.h"
 #include "cvar.h"
@@ -608,6 +609,10 @@ void CL_RegisterResources( sizebuf_t* msg )
 		AddStartupTiming( "begin CL_RegisterResources()" );
 
 	ContinueLoadingProgressBar( "ClientConnect", 8, 0.0f );
+
+    // HUD textures can be cached before the server's list and downloads arrive.
+    // Re-upload their checked files in place, including during demo playback.
+    cse::engine_image::RefreshFileTextures();
 
 	if ( !cls.demoplayback )
 		CL_SendConsistencyInfo( msg );
@@ -3429,37 +3434,31 @@ int CL_GetServerCount()
 ===============
 CL_TakeSnapshot_f
 
-Generates a filename and calls the vidwin.c function to write a .bmp file
+Generates a filename and calls the vidwin.c function to write a .webp file
 ===============
 */
-void CL_TakeSnapshot_f()
-{
-	int i;
-	char base[64];
-	char filename[64];
-	FileHandle_t fp;
+void CL_TakeSnapshot_f() {
+    constexpr int SnapshotLimit = 1000;
+    constexpr int SnapshotNameLength = 64;
+    char base[SnapshotNameLength];
+    char filename[sizeof(base) + sizeof("0000.webp")];
 
-	if ( cl.num_entities && cl_entities->model )
-		COM_FileBase( cl_entities->model->name, base );
-	else
-		Q_strcpy( base, "Snapshot" );
+    if (cl.num_entities && cl_entities->model) {
+        COM_FileBase(cl_entities->model->name, base);
+    } else {
+        Q_strcpy(base, "Snapshot");
+    }
 
-	// find a file name to save it to
-	for ( i = 0; i < 1000; i++ )
-	{
-		snprintf( filename, sizeof( filename ), "%s%04d.bmp", base, i );
-
-		fp = FS_OpenPathID( filename, "r", "GAMECONFIG" );
-		if ( !fp )
-		{
-			VID_TakeSnapshot( filename );
-			return;
-		}
-
-		FS_Close( fp );
-	}
-
-	Con_Printf( "Unable to take a screenshot.\n" );
+    for (int shot = 0; shot < SnapshotLimit; ++shot) {
+        snprintf(filename, sizeof(filename), "%s%04d.webp", base, shot);
+        FileHandle_t file = FS_OpenPathID(filename, "r", "GAMECONFIG");
+        if (!file) {
+            VID_TakeSnapshot(filename);
+            return;
+        }
+        FS_Close(file);
+    }
+    Con_Printf("Unable to take a screenshot.\n");
 }
 
 /*

@@ -2,6 +2,7 @@
 #include "VGui1NativeRuntime.h"
 #endif
 #include "vgui_EngineSurface.h"
+#include "engine_image.h"
 #include "draw.h"
 #include "screen.h"
 #include "engine_apiproxy.h"
@@ -82,6 +83,7 @@ EngineSurface::EngineSurface()
 
 EngineSurface::~EngineSurface()
 {
+    cse::engine_image::ForgetFileTextures(this);
 #if defined(__APPLE__)
     cse_vgui1_native::ForgetEngineSurface(this);
 #endif
@@ -323,6 +325,7 @@ void EngineSurface::drawTexturedPolygon( vgui2::VGuiVertex*, int )
 }
 
 void EngineSurface::drawSetTextureRGBA(int id, const char* pixels, int wide, int tall, int, int) {
+    cse::engine_image::ForgetFileTexture(this, id);
     if (_renderPlat->textures) {
         const bool bound = _renderPlat->current && _renderPlat->current->id == id;
         _renderPlat->textures->Insert(id, wide, tall, pixels);
@@ -333,6 +336,7 @@ void EngineSurface::drawSetTextureRGBA(int id, const char* pixels, int wide, int
 }
 
 void EngineSurface::drawSetTextureBGRA(int id, const char* pixels, int wide, int tall, int filter, int reload) {
+    cse::engine_image::ForgetFileTexture(this, id);
 #if INTPTR_MAX > INT32_MAX
     std::size_t bytes = 0;
     if (id <= 0 || !pixels || !TextureBytes(wide, tall, bytes)) {
@@ -481,42 +485,49 @@ void EngineSurface::drawUpdateRegionTextureBGRA(int id, int x, int y, const unsi
 #endif
 }
 
-void EngineSurface::drawSetTextureFile( int id, const char* filename, int hardwareFilter, bool forceReload )
-{
-	vgui_texture_t* texture = _renderPlat->textures->GetTexture( id );
-	if ( texture && !forceReload )
-	{
-		_renderPlat->current = texture;
-		return;
-	}
+void EngineSurface::drawSetTextureFile(int id, const char* filename, int hardwareFilter, bool forceReload) {
+    constexpr int SurfaceImageBytes = 1024 * 1024;
+    auto* texture = _renderPlat->textures->GetTexture(id);
+    if (texture && !forceReload) {
+        drawSetTexture(id);
+        return;
+    }
+    const bool protectedImage = cse::engine_image::GetFilePolicy(filename).IsProtected();
+    byte* pixels = static_cast<byte*>(std::malloc(SurfaceImageBytes));
+    int width = 0;
+    int height = 0;
+    const std::string path = cse::engine_image::TargaPath(filename);
+    bool loaded = pixels && LoadTGA(const_cast<char*>(path.c_str()), pixels, SurfaceImageBytes, &width, &height) != 0;
+    if (!loaded && pixels && !protectedImage) {
+        const std::string bitmapPath = cse::engine_image::BitmapPath(filename);
+        FileHandle_t file = FS_Open(bitmapPath.c_str(), "rb");
+        if (file) {
+            VGui_LoadBMP(file, pixels, SurfaceImageBytes, &width, &height);
+            loaded = width > 0 && height > 0;
+        }
+    }
+    if (loaded) {
+        drawSetTextureRGBA(id, reinterpret_cast<const char*>(pixels), width, height, hardwareFilter, 0);
+    } else if (protectedImage) {
+        // A missing checked file must not leave an unchecked cached image visible.
+        constexpr byte OpaqueBlack[] = {0, 0, 0, 255};
+        constexpr int FallbackDimension = 1;
+        drawSetTextureRGBA(id, reinterpret_cast<const char*>(OpaqueBlack), FallbackDimension, FallbackDimension,
+                           hardwareFilter, 0);
+    }
+    std::free(pixels);
+    // Keep failed requests too: the required file may arrive after HUD initialization.
+    cse::engine_image::RememberFileTexture(this, id, filename, hardwareFilter);
+    texture = _renderPlat->textures->GetTexture(id);
+    if (texture) {
+        drawSetTexture(id);
+    }
+}
 
-	byte* pixels = (byte*)malloc( 1024 * 1024 );
-	int wide;
-	int tall;
-#ifdef _WIN32
-	char name[MAX_PATH];
-#else
-	char name[4096];
-#endif
-	_snprintf( name, sizeof( name ), "%s.tga", filename );
-	if ( LoadTGA( name, pixels, 1024 * 1024, &wide, &tall ) )
-	{
-		drawSetTextureRGBA( id, (const char*)pixels, wide, tall, hardwareFilter, 0 );
-	}
-	else
-	{
-		_snprintf( name, sizeof( name ), "%s.bmp", filename );
-		FileHandle_t file = FS_Open( name, "rb" );
-		if ( file )
-		{
-			VGui_LoadBMP( file, pixels, 1024 * 1024, &wide, &tall );
-			drawSetTextureRGBA( id, (const char*)pixels, wide, tall, hardwareFilter, 0 );
-		}
-	}
-	texture = _renderPlat->textures->GetTexture( id );
-	free( pixels );
-	if ( texture )
-		_renderPlat->current = texture;
+void EngineSurface::refreshFileTextures() {
+    const int previousTexture = _renderPlat->current ? _renderPlat->current->id : 0;
+    cse::engine_image::RefreshFileTextures(this);
+    drawSetTexture(previousTexture);
 }
 
 void EngineSurface::drawGetTextureSize( int id, int& wide, int& tall )
