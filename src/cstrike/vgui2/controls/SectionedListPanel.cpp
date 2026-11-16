@@ -1,3 +1,4 @@
+#include "../../../vgui2/controls/SmokedGlass.h"
 #include "../../../public/localization_controls.h"
 //========= Copyright © 1996-2003, Valve LLC, All rights reserved. ============
 //
@@ -34,6 +35,22 @@
 
 namespace vgui2
 {
+namespace {
+bool IsScoreboard(Panel* panel) {
+    for (Panel* owner = panel->GetParent(); owner; owner = owner->GetParent()) {
+        if (!std::strcmp(owner->GetName(), "ClientScoreBoard")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+HFont ScoreboardFont(Panel* panel, IScheme* scheme, HFont candidate) {
+    constexpr int ScoreboardFontHeight = 16;
+    return IsScoreboard(panel) ? smoked::TextFont(panel, scheme, candidate, true, smoked::Pixels(ScoreboardFontHeight)) : candidate;
+}
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Individual items in the list
 //-----------------------------------------------------------------------------
@@ -428,9 +445,38 @@ bool SectionedListPanel::AddColumnToSection( int sectionID, const char* columnNa
 
 void SectionedListPanel::ApplySchemeSettings( IScheme* scheme )
 {
+    if (cse::ui::ControlsSmokedGlass()) {
+        m_iScrollbarSize = smoked::Pixels(cse::ui::ScrollbarWidth);
+    } else {
+        float scale = 1.0f;
+        if (IsProportional()) {
+            int baseWidth = 0;
+            int baseHeight = 0;
+            int screenWidth = 0;
+            int screenHeight = 0;
+            GetProportionalBase(baseWidth, baseHeight);
+            surface()->GetScreenSize(screenWidth, screenHeight);
+            scale = static_cast<float>(screenWidth) / static_cast<float>(baseWidth);
+        }
+        constexpr float OriginalScrollbarWidth = 18.0f;
+        m_iScrollbarSize = static_cast<int>(OriginalScrollbarWidth * scale);
+    }
+
 	BaseClass::ApplySchemeSettings( scheme );
 	SetBgColor( GetSchemeColor( "BuddyListBgColor", GetBgColor(), scheme ) );
 	SetBorder( scheme->GetBorder( "ButtonDepressedBorder" ) );
+    if (IsScoreboard(this)) {
+        const HFont fallback = scheme->GetFont("DefaultVerySmallFallBack", false);
+        for (int section = 0; section < m_Sections.Count(); ++section) {
+            auto& entry = m_Sections[section];
+            for (int column = 0; column < entry.m_Columns.Count(); ++column) {
+                if (entry.m_Columns[column].m_hFallbackFont) {
+                    entry.m_Columns[column].m_hFallbackFont = ScoreboardFont(entry.m_pHeader, scheme, fallback);
+                }
+            }
+        }
+    }
+
 }
 
 void SectionedListPanel::OnMouseWheeled( int delta )
@@ -694,7 +740,7 @@ int SectionedListPanel::GetSectionTall()
 
 void SectionedListPanel::OverrideLineSpacing( int spacing )
 {
-	if ( IsProportional() )
+	if (IsProportional() && !(cse::ui::ControlsSmokedGlass() && IsScoreboard(this)))
 		spacing = GetProportionalScaledValue( spacing );
 	if ( m_iLineSpacingOverride != spacing )
 	{
@@ -797,6 +843,10 @@ bool SectionedListPanel::GetCellBounds( int itemID, int column, int& x, int& y, 
 	if ( !IsItemIDValid( itemID ) || !m_Items[itemID]->IsVisible() )
 		return false;
 	CItemButton* item = m_Items[itemID];
+    // Input can query a newly selected row before its first paint populates the column images.
+    if (item->IsLayoutInvalid()) {
+        item->InvalidateLayout(true, false);
+    }
 
 	//!! ignores column for now
 	item->GetBounds( x, y, wide, tall );
@@ -1135,7 +1185,22 @@ void CItemButton::OnMouseDoublePressed( MouseCode code )
 
 void CItemButton::ApplySchemeSettings( IScheme* scheme )
 {
+    // Label clears auxiliary images during a scheme reload. Keep the column-owned objects.
+    CUtlVector<IImage*> columns;
+    for (int index = 0; index < GetImageCount(); ++index) {
+        columns.AddToTail(GetImageAtIndex(index));
+    }
+
 	BaseClass::ApplySchemeSettings( scheme );
+    SetFont(ScoreboardFont(this, scheme, GetFont()));
+    for (int index = 0; index < columns.Count(); ++index) {
+        IImage* image = columns[index];
+        SetImageAtIndex(index, image, 0);
+        if (auto* text = dynamic_cast<TextImage*>(image)) {
+            text->SetFont(GetFont());
+        }
+    }
+
 	m_ArmedFgColor1 = GetSchemeColor( "BuddyButton/ArmedFgColor1", scheme );
 	m_ArmedFgColor2 = GetSchemeColor( "BuddyButton/ArmedFgColor2", scheme );
 	m_ArmedBgColor = GetSchemeColor( "BuddyButton/ArmedBgColor", scheme );
@@ -1214,6 +1279,10 @@ void CItemButton::PerformLayout()
 			TextImage* text = (TextImage*)GetImageAtIndex( i );
 			if ( text )
 			{
+                if (IsScoreboard(this)) {
+                    const HFont fallback = m_pListPanel->GetColumnFallbackFontBySection(m_iSectionID, i);
+                    text->SetUseFallbackFont(fallback != 0, fallback);
+                }
 				cse::localization::SetCellText(text, m_pData, name);
 				text->ResizeImageToContentMaxWidth( columnWide );
 				VPANEL focus = input()->GetFocus();
@@ -1267,11 +1336,27 @@ void CSectionHeader::Paint()
 
 void CSectionHeader::ApplySchemeSettings( IScheme* scheme )
 {
+    // Label clears auxiliary images during a scheme reload. Keep the column-owned objects.
+    CUtlVector<IImage*> columns;
+    for (int index = 0; index < GetImageCount(); ++index) {
+        columns.AddToTail(GetImageAtIndex(index));
+    }
+
 	BaseClass::ApplySchemeSettings( scheme );
+
+
 	SetFgColor( GetSchemeColor( "SectionTextColor", scheme ) );
 	m_SectionDividerColor = GetSchemeColor( "SectionDividerColor", scheme );
 	SetBgColor( GetSchemeColor( "BuddyListBgColor", GetBgColor(), scheme ) );
-	SetFont( scheme->GetFont( "DefaultVerySmall", IsProportional() ) );
+	SetFont(ScoreboardFont(this, scheme,
+        smoked::TextFont(this, scheme, scheme->GetFont("DefaultVerySmall", IsProportional()))));
+    for (int index = 0; index < columns.Count(); ++index) {
+        IImage* image = columns[index];
+        SetImageAtIndex(index, image, 0);
+        if (auto* text = dynamic_cast<TextImage*>(image)) {
+            text->SetFont(GetFont());
+        }
+    }
 }
 
 void CSectionHeader::PerformLayout()
@@ -1308,6 +1393,12 @@ void CSectionHeader::PerformLayout()
 				xpos += columnWide;
 				continue;
 			}
+            if (IsScoreboard(this)) {
+                if (auto* text = dynamic_cast<TextImage*>(image)) {
+                    const HFont fallback = m_pListPanel->GetColumnFallbackFontBySection(m_iSectionID, i);
+                    text->SetUseFallbackFont(fallback != 0, fallback);
+                }
+            }
 			int contentWide, contentTall;
 			image->GetContentSize( contentWide, contentTall );
 			int maxWidth = columnWide;
