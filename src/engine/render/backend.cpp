@@ -109,7 +109,16 @@ bool InitializeBackend(SDL_Window* window, std::string& error, unsigned samples)
     sceneActive = false;
 #if defined(CSE_ENABLE_METAL)
     if (UsingMetal()) {
-        recorder = std::make_unique<FrameRecorder>();
+        // Custom server model sets can retain over 650 MiB before the first world frame.
+        // These CPU sources live until texture deletion, independently of the evictable GPU cache.
+        constexpr int kBaselineSystemRamMiB = 8 * 1024;
+        constexpr std::size_t kBaselineTextureStorageBytes = std::size_t{1024} * 1024 * 1024;
+        constexpr std::size_t kLargerTextureStorageBytes = 2 * kBaselineTextureStorageBytes;
+        FrameLimits limits;
+        // SDL reports installed RAM in MiB; unknown values retain the smaller budget.
+        limits.capture.textureStorageBytes = SDL_GetSystemRAM() > kBaselineSystemRamMiB ?
+            kLargerTextureStorageBytes : kBaselineTextureStorageBytes;
+        recorder = std::make_unique<FrameRecorder>(limits);
         session = std::make_unique<MetalSession>();
         failure.clear();
         recording = false;

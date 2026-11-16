@@ -1,9 +1,11 @@
 #include "backend.h"
 #include "native/legacy_dispatch.h"
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -46,7 +48,91 @@ NATIVE_SLOTS(NATIVE_CHECK_SIGNATURE)
 [[noreturn]] void Sys_Error(const char*, ...) {
     throw std::runtime_error("backend failed");
 }
-int main() {
+
+namespace {
+constexpr int kBaselineSystemRamMiB = 8 * 1024;
+int systemRamMiB = kBaselineSystemRamMiB;
+}
+
+// Supply installed RAM independently of the host so both runtime budgets are exercised.
+extern "C" int SDLCALL SDL_GetSystemRAM(void) {
+    return systemRamMiB;
+}
+
+void RuntimeTextureBudgets(SDL_Window* window) {
+    using namespace cse::render;
+    constexpr std::size_t kGiB = std::size_t{1024} * 1024 * 1024;
+    struct Case {
+        int ramMiB;
+        std::size_t textureBytes;
+    };
+    // Catch an inclusive threshold, a 16 GiB cutoff, incorrect RAM units and unknown-RAM handling.
+    const std::array<Case, 9> cases{{
+        {-1, kGiB}, {0, kGiB}, {4096, kGiB}, {8191, kGiB}, {8192, kGiB},
+        {8193, 2 * kGiB}, {12288, 2 * kGiB}, {16384, 2 * kGiB},
+        {std::numeric_limits<int>::max(), 2 * kGiB}
+    }};
+    for (const auto& test : cases) {
+        systemRamMiB = test.ramMiB;
+        std::string error;
+        CHECK(InitializeBackend(window, error));
+        CHECK(BackendRecorder());
+        CHECK(BackendRecorder()->Limits().capture.textureStorageBytes == test.textureBytes);
+        ShutdownBackend();
+    }
+}
+
+void LargeTexturePrecache() {
+    using namespace cse::render;
+    constexpr GLsizei kTextureDimension = 1024;
+    constexpr std::size_t kRgbaComponents = 4;
+    // A 768 MiB precache covers custom model sets that already exceed 650 MiB before drawing.
+    constexpr std::size_t kTextureCount = 192;
+    constexpr unsigned char kFirstColor = 127;
+    constexpr unsigned char kLastColor = 191;
+    std::array<GLuint, kTextureCount> textures{};
+    std::vector<unsigned char> pixels(kTextureDimension * kTextureDimension * kRgbaComponents, kFirstColor);
+    CseRenderGenTextures(static_cast<GLsizei>(textures.size()), textures.data());
+    for (std::size_t index = 0; index < textures.size(); ++index) {
+        CHECK(textures[index]);
+        if (index == textures.size() - 1) {
+            std::fill(pixels.begin(), pixels.end(), kLastColor);
+        }
+        CseRenderBindTexture(GL_TEXTURE_2D, textures[index]);
+        CseRenderTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        CseRenderTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        CseRenderTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kTextureDimension, kTextureDimension, 0,
+            GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        CHECK(BackendUploadSucceeded());
+    }
+    // Precache must keep both early and late textures usable when they are first drawn.
+    constexpr int kFrameDimension = 32;
+    const std::array<std::size_t, 2> sampled{{0, textures.size() - 1}};
+    for (const auto index : sampled) {
+        BeginBackendFrame(kFrameDimension, kFrameDimension);
+        CseRenderViewport(0, 0, kFrameDimension, kFrameDimension);
+        CseRenderEnable(GL_TEXTURE_2D);
+        CseRenderTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+        CseRenderBindTexture(GL_TEXTURE_2D, textures[index]);
+        CseRenderBegin(GL_QUADS);
+        CseRenderVertex2f(-1, -1);
+        CseRenderVertex2f(1, -1);
+        CseRenderVertex2f(1, 1);
+        CseRenderVertex2f(-1, 1);
+        CseRenderEnd();
+        std::array<unsigned char, kRgbaComponents> pixel{};
+        CHECK(BackendReadPixels(false, kFrameDimension / 2, kFrameDimension / 2, 1, 1,
+            kRgbaComponents, 1, pixel.data()));
+        const auto expected = index == 0 ? kFirstColor : kLastColor;
+        for (const auto component : pixel) {
+            CHECK(component == expected);
+        }
+    }
+    CseRenderDeleteTextures(static_cast<GLsizei>(textures.size()), textures.data());
+    CHECK(BackendUploadSucceeded());
+}
+
+int main(int argc, char** argv) {
     using namespace cse::render;
     std::string error;
     CHECK(SDL_Init(SDL_INIT_VIDEO));
@@ -54,6 +140,13 @@ int main() {
     CHECK(window);
     CHECK(ConfigureBackend(false, false, error));
     CHECK(UsingMetal());
+    if (argc == 2 && std::string(argv[1]) == "ram-budget") {
+        RuntimeTextureBudgets(window);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        std::cout << "runtime texture budgets at the installed-RAM threshold passed\n";
+        return 0;
+    }
     CHECK(InitializeBackend(window, error));
     CHECK(!BackendSceneActive());
     int absentWidth = 1;
@@ -61,6 +154,14 @@ int main() {
     CHECK(!BackendPresentedSize(absentWidth, absentHeight));
     CHECK(absentWidth == 0 && absentHeight == 0);
     CHECK(!SDL_GL_GetCurrentContext());
+    if (argc == 2 && std::string(argv[1]) == "large-precache") {
+        LargeTexturePrecache();
+        ShutdownBackend();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        std::cout << "large texture precache and first-use rendering passed\n";
+        return 0;
+    }
     // Startup uploads/state happen before the first ordinary frame.
     GLuint texture = 0;
     CseRenderGenTextures(1, &texture);
