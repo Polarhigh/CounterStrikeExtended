@@ -32,7 +32,7 @@ def run(args):
         env = dict(os.environ)
         env.update(CSE_BOOTSTRAP_LOG=str(log), CSE_BOOTSTRAP_COUNTER=str(root / 'counter'),
                    CSE_BOOTSTRAP_PLAN='restart' if args.case in
-                   ['restart', 'retained', 'restart-options', 'restart-software', 'restart-to-software', 'restart-to-hardware', 'restart-exec-failure', 'menu-software', 'menu-to-software', 'menu-to-hardware', 'command-size-only', 'command-renderer-only'] else 'normal')
+                   ['restart', 'retained', 'restart-options', 'restart-software', 'restart-to-software', 'restart-to-hardware', 'restart-metal-to-gl', 'restart-gl-to-metal', 'restart-exec-failure', 'menu-software', 'menu-to-software', 'menu-to-hardware', 'menu-metal-to-gl', 'menu-gl-to-metal', 'command-size-only', 'command-renderer-only'] else 'normal')
         command = [str(executable)]
         if args.case.startswith('command-'):
             command += ['-soft', '-windowed', '-w', '800', '-h', '600']
@@ -42,6 +42,11 @@ def run(args):
             env['CSE_BOOTSTRAP_MENU_RENDERER'] = 'OpenGL' if args.case == 'menu-to-hardware' else 'Software'
             if args.case == 'menu-software':
                 env['CSE_BOOTSTRAP_MENU_RESOLUTION'] = '800 x 600'
+        if args.case in ['menu-metal-to-gl', 'menu-gl-to-metal']:
+            command = [str(executable), '-metal' if args.case == 'menu-metal-to-gl' else '-gl',
+                       '-windowed', '-w', '800', '-h', '600']
+            env['CSE_BOOTSTRAP_ACTIVE_METAL'] = '1' if args.case == 'menu-metal-to-gl' else '0'
+            env['CSE_BOOTSTRAP_MENU_RENDERER'] = 'OpenGL' if args.case == 'menu-metal-to-gl' else 'Metal'
         if args.case == 'restart-options':
             command += ['-game', 'valve', '-fullscreen', '-w', '640', '-h', '480', '-name', 'player with spaces',
                         '-extra', 'backslash\\quote"literal', '-literal', 'player "bob" smith']
@@ -49,6 +54,15 @@ def run(args):
         if args.case in ['restart-to-software', 'restart-to-hardware']:
             command += ['-gl' if args.case == 'restart-to-software' else '-soft']
             env['CSE_BOOTSTRAP_RESTART_OPTIONS'] = '-soft' if args.case == 'restart-to-software' else '-gl'
+        if args.case in ['restart-metal-to-gl', 'restart-gl-to-metal']:
+            command += ['-metal' if args.case == 'restart-metal-to-gl' else '-gl']
+            env['CSE_BOOTSTRAP_RESTART_OPTIONS'] = '-gl' if args.case == 'restart-metal-to-gl' else '-metal'
+        if args.case == 'metal-cached-software':
+            seed_env = dict(env, CSE_BOOTSTRAP_PLAN='restart', CSE_BOOTSTRAP_MENU_RENDERER='Software')
+            seed = subprocess.run([str(executable), '-gl'], cwd=cwd, env=seed_env, capture_output=True, timeout=10)
+            assert seed.returncode == 0, seed.stderr
+            log.unlink()
+            command += ['-metal']
         if args.case == 'restart-software':
             command += ['-windowed', '-w', '640', '-h', '480']
         if args.case == 'restart-exec-failure':
@@ -92,7 +106,7 @@ def run(args):
             # leaks returns its analysis status; the direct CTest case verifies the process exit status.
             expected_exit = 0
             assert result.returncode == expected_exit, report
-            expected_runs = 2 if args.case in ['restart', 'retained', 'restart-options', 'restart-software', 'restart-to-software', 'restart-to-hardware', 'menu-software', 'menu-to-software', 'menu-to-hardware', 'command-size-only', 'command-renderer-only'] else 1
+            expected_runs = 2 if args.case in ['restart', 'retained', 'restart-options', 'restart-software', 'restart-to-software', 'restart-to-hardware', 'restart-metal-to-gl', 'restart-gl-to-metal', 'menu-software', 'menu-to-software', 'menu-to-hardware', 'menu-metal-to-gl', 'menu-gl-to-metal', 'command-size-only', 'command-renderer-only'] else 1
             if args.case == 'retained':
                 assert 'Engine image remains loaded' not in report['stderr'], report
             assert events.count('run\t') == expected_runs, events
@@ -101,6 +115,13 @@ def run(args):
             assert events.count('checked_borrowed_filesystem\tyes') == expected_runs, events
             assert events.count('root_file\tyes') == expected_runs, events
             commands = [row.split('\t', 1)[1] for row in events if row.startswith('command\t')]
+            if args.case in ['restart-metal-to-gl', 'restart-gl-to-metal', 'metal-cached-software']:
+                engines = [Path(row.split('\t', 1)[1]).name for row in events if row.startswith('engine\t')]
+                assert all(image == 'hw.dylib' for image in engines), engines
+                if args.case != 'metal-cached-software':
+                    replacement = '-gl' if args.case == 'restart-metal-to-gl' else '-metal'
+                    previous = '-metal' if args.case == 'restart-metal-to-gl' else '-gl'
+                    assert replacement in commands[1] and previous not in commands[1], commands
             if args.case == 'command-size-only':
                 for value in ['-soft', '-windowed', '-w 1024', '-h 768']:
                     assert value in commands[1], commands
@@ -114,11 +135,11 @@ def run(args):
                 dimensions = ['-w 800', '-h 600'] if args.case == 'menu-software' else ['-w 1024', '-h 768']
                 for updated in ['-fullscreen', *dimensions]:
                     assert updated in commands[1], commands
-                replacement = '-gl' if args.case == 'menu-to-hardware' else '-soft'
+                replacement = '-metal' if args.case == 'menu-gl-to-metal' else '-gl' if args.case in ['menu-to-hardware', 'menu-metal-to-gl'] else '-soft'
                 assert replacement in commands[1], commands
                 engines = [Path(row.split('\t', 1)[1]).name for row in events if row.startswith('engine\t')]
-                expected_first = 'hw.dylib' if args.case == 'menu-to-software' else 'swds.dylib'
-                expected_final = 'hw.dylib' if args.case == 'menu-to-hardware' else 'swds.dylib'
+                expected_first = 'hw.dylib' if args.case in ['menu-to-software', 'menu-metal-to-gl', 'menu-gl-to-metal'] else 'swds.dylib'
+                expected_final = 'hw.dylib' if args.case in ['menu-to-hardware', 'menu-metal-to-gl', 'menu-gl-to-metal'] else 'swds.dylib'
                 assert engines == [expected_first, expected_final], engines
                 # A fresh launch has no explicit renderer flag; it must honor the
                 # actual video setter's persisted legacy EngineDLL spelling.
@@ -129,6 +150,11 @@ def run(args):
                 assert fresh.returncode == 0, fresh.stderr
                 fresh_images = [Path(row.split('\t', 1)[1]).name for row in fresh_events if row.startswith('engine\t')]
                 assert fresh_images == [expected_final], fresh_events
+                if args.case in ['menu-metal-to-gl', 'menu-gl-to-metal']:
+                    previous = '-gl' if args.case == 'menu-gl-to-metal' else '-metal'
+                    assert previous not in commands[1], commands
+                    saved = 'metal' if args.case == 'menu-gl-to-metal' else 'gl'
+                    assert 'saved_renderer\t' + saved in fresh_events, fresh_events
             if args.case in ['software', 'restart-software']:
                 engines = [row.split('\t', 1)[1] for row in events if row.startswith('engine\t')]
                 assert all(Path(image).name == 'swds.dylib' for image in engines), engines

@@ -20,6 +20,7 @@
 #include "vgui_intwrap2.h"
 #include "../common/const.h"
 #include "texture_upload.h"
+#include "render/backend.h"
 
 #include <cmath>
 #include <cstdio>
@@ -83,6 +84,19 @@ int numgltextures;
 GL_PALETTE gGLPalette[MAX_GLPALETTES];
 int g_currentpalette = -1;
 
+#if defined(CSE_ENABLE_METAL)
+// Typed radar resolution captures the encoded texture's palette without changing binding caches.
+bool ReadRadarTexturePalette(unsigned int encoded, unsigned char* output) {
+    const unsigned int slot = encoded >> 16;
+    if (!output || slot == 0 || slot > MAX_GLPALETTES) {
+        return false;
+    }
+    std::memcpy(output, gGLPalette[slot - 1].colors, sizeof(gGLPalette[slot - 1].colors));
+    return true;
+}
+#endif
+
+
 int gl_filter_max = GL_LINEAR;
 
 cvar_t gl_max_size = { "gl_max_size", "256", FCVAR_ARCHIVE };
@@ -143,19 +157,31 @@ void GL_PaletteSelect( int paletteIndex )
 	}
 }
 
-void GL_Bind( int texnum )
-{
-	int paletteIndex = ( texnum >> 16 ) - 1;
-
-	texnum &= 0xFFFF;
-	if ( currenttexture == texnum )
-		return;
-
-	currenttexture = texnum;
-	qglBindTexture( GL_TEXTURE_2D, texnum );
-
-	if ( paletteIndex >= 0 )
-		GL_PaletteSelect( paletteIndex );
+void GL_Bind(int texnum) {
+    constexpr int kTextureNameMask = 0xffff;
+    constexpr int kPaletteShift = 16;
+    const int paletteIndex = (texnum >> kPaletteShift) - 1;
+    texnum &= kTextureNameMask;
+    if (currenttexture == texnum) {
+#if defined(CSE_ENABLE_METAL)
+        if (!cse::render::UsingMetal()) {
+            return;
+        }
+        // Deletion unbinds native objects; recycled names must not hit a stale engine software cache.
+        GLint binding = 0;
+        qglGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+        if (binding == texnum) {
+            return;
+        }
+#else
+        return;
+#endif
+    }
+    currenttexture = texnum;
+    qglBindTexture(GL_TEXTURE_2D, texnum);
+    if (paletteIndex >= 0) {
+        GL_PaletteSelect(paletteIndex);
+    }
 }
 
 void ComputeScaledSize(int* wscale, int* hscale, int width, int height) {
