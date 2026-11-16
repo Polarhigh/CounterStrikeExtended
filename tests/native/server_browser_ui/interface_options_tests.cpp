@@ -4,6 +4,14 @@
 #include "cl_dll.h"
 #include "../../../src/GameUI/OptionsDialog.h"
 #include "../../../src/GameUI/OptionsSubInterface.h"
+#include "../../../src/GameUI/HudRadarDialog.h"
+#include "../../../src/cstrike/cl_dll/nextclient/radar_cvars.h"
+#include "cvardef.h"
+#include "CheckButton.h"
+#include "Slider.h"
+#include "vgui/IInput.h"
+#include <map>
+#include <cmath>
 #include "../../../src/common/interface_language.h"
 #include "PropertyPage.h"
 #include "PropertySheet.h"
@@ -16,6 +24,7 @@
 #include "Label.h"
 #include "TextImage.h"
 #include "TextEntry.h"
+#include "Tooltip.h"
 #include "vgui/IVGui.h"
 #include "vgui/KeyValues.h"
 #include "vgui/IScheme.h"
@@ -84,12 +93,26 @@ namespace engine_fixture {
 using namespace cse::localization;
 float uiStyle = 0;
 int materialDraws = 0;
+bool radarAvailable = false;
+std::map<std::string, float> radarValues;
 float GetCvar(char* name) {
-    return std::strcmp(name, cse::ui::VGuiStyleCvar) == 0 ? uiStyle : 0.0f;
+    if (std::strcmp(name, cse::ui::VGuiStyleCvar) == 0) {
+        return uiStyle;
+    }
+    const auto found = radarValues.find(name);
+    return found != radarValues.end() ? found->second : 0.0f;
+}
+cvar_t* GetCvarPointer(const char* name) {
+    static cvar_t available{};
+    return radarAvailable && radarValues.count(name) != 0 ? &available : nullptr;
 }
 void SetCvar(char* name, float value) {
-    Require(std::strcmp(name, cse::ui::VGuiStyleCvar) == 0, "only the selected UI style is changed");
-    uiStyle = value;
+    if (std::strcmp(name, cse::ui::VGuiStyleCvar) == 0) {
+        uiStyle = value;
+        return;
+    }
+    Require(radarAvailable && radarValues.count(name) != 0, "only registered radar settings are changed");
+    radarValues[name] = value;
 }
 int CSE_ABI_CALL CurrentStyle() { return uiStyle > 0.0f ? 1 : 0; }
 bool CSE_ABI_CALL Material(const cse::ui::BackdropRect*, const cse::ui::BackdropRect*,
@@ -355,6 +378,173 @@ public:
     }
 };
 
+void RunRadarSettings(vgui2::Panel* root, vgui2::HScheme scheme, const std::filesystem::path& output) {
+    using namespace engine_fixture;
+    {
+        vgui2::Slider singleValue(root, "SingleValueSlider");
+        singleValue.SetSize(128, 24);
+        singleValue.SetRange(42, 42);
+        singleValue.SetValue(42, false);
+        int knobStart = 0;
+        int knobEnd = 0;
+        singleValue.GetNobPos(knobStart, knobEnd);
+        Require(singleValue.GetValue() == 42 && knobStart == 0 && knobEnd > knobStart && knobEnd <= 128,
+            "a collapsed slider range keeps a valid knob while radar controls initialize");
+    }
+    {
+        auto* first = new vgui2::Panel(root, "FirstTooltipOwner");
+        auto* second = new vgui2::Panel(root, "SecondTooltipOwner");
+        auto* firstTooltip = first->GetTooltip();
+        firstTooltip->SetText("First tooltip");
+        firstTooltip->SetTooltipDelay(0);
+        firstTooltip->ResetDelay();
+        firstTooltip->ShowTooltip(first);
+        vgui2::PHandle popupOwner;
+        popupOwner.Set(first->FindChildByName("tooltip", false));
+        Require(popupOwner.Get(), "the first tooltip creates a shared popup");
+        auto* secondTooltip = second->GetTooltip();
+        secondTooltip->SetText("Second tooltip");
+        secondTooltip->SetTooltipDelay(0);
+        secondTooltip->ResetDelay();
+        secondTooltip->ShowTooltip(second);
+        firstTooltip->HideTooltip();
+        delete first;
+        auto* popup = popupOwner.Get();
+        Require(popup && popup->IsVisible() && popup->GetParent() == second,
+            "hiding and deleting an inactive tooltip owner preserves the active owner's popup");
+        delete second;
+        Require(!popupOwner.Get(), "the final tooltip owner releases the shared popup");
+    }
+    for (const auto& definition : radar::kCvarDefinitions) {
+        radarValues[definition.name] = static_cast<float>(std::atof(definition.default_value));
+    }
+    radarAvailable = false;
+    auto* halfLifePage = new COptionsSubInterface(root);
+    auto* halfLifeButton = dynamic_cast<vgui2::Button*>(halfLifePage->FindChildByName("RadarSettings", false));
+    Require(halfLifeButton && !halfLifeButton->IsEnabled(), "Half-Life cannot configure the CS-only radar");
+    delete halfLifePage;
+    radarAvailable = true;
+    auto* csPage = new COptionsSubInterface(root);
+    auto* radarButton = dynamic_cast<vgui2::Button*>(csPage->FindChildByName("RadarSettings", false));
+    Require(radarButton && radarButton->IsEnabled(), "radar configuration belongs to the Interface page");
+    delete csPage;
+    std::ofstream fit(output / "radar-fit.tsv");
+    for (int style : {0, 1}) {
+        uiStyle = static_cast<float>(style);
+        radarValues["hud_radar_scale"] = 1.7f;
+        auto* dialog = new CHudRadarDialog(root);
+        dialog->SetScheme(scheme);
+        dialog->DoModal();
+        Settle(*root);
+        Require(vgui2::input()->GetAppModalSurface() == dialog->GetVPanel(), "radar child is modal");
+        auto* slider = dynamic_cast<vgui2::Slider*>(dialog->FindChildByName("hud_radar_scale", false));
+        auto* names = dynamic_cast<vgui2::CheckButton*>(dialog->FindChildByName("hud_radar_names", false));
+        auto* apply = dynamic_cast<vgui2::Button*>(dialog->FindChildByName("Apply", false));
+        Require(slider && names && apply && !apply->IsEnabled(), "opening radar settings has no pending edits");
+        slider->SetValue(200);
+        names->SetSelected(true);
+        Settle(*root);
+        Require(apply->IsEnabled() && radarValues["hud_radar_scale"] == 1.7f
+            && radarValues["hud_radar_names"] == 0.0f, "radar edits are staged until Apply or OK");
+        Fit(*dialog, fit);
+        Capture(*dialog, output / (style ? "radar-smoked.bmp" : "radar-original.bmp"));
+        vgui2::PHandle owner;
+        owner.Set(dialog);
+        dialog->OnCommand("Close");
+        Settle(*root);
+        Require(!owner.Get() && radarValues["hud_radar_scale"] == 1.7f,
+            "Cancel deletes radar child and leaves unapplied settings unchanged");
+
+        dialog = new CHudRadarDialog(root);
+        dialog->SetScheme(scheme);
+        dialog->DoModal();
+        Settle(*root);
+        apply = dynamic_cast<vgui2::Button*>(dialog->FindChildByName("Apply", false));
+        dialog->OnCommand("Defaults");
+        Settle(*root);
+        Require(apply->IsEnabled() && radarValues["hud_radar_scale"] == 1.7f,
+            "restoring radar defaults stages the shared defaults");
+        dialog->OnCommand("Apply");
+        Settle(*root);
+        Require(std::abs(radarValues["hud_radar_scale"] - 1.15f) < 0.001f && !apply->IsEnabled(),
+            "Apply commits radar defaults and establishes a new baseline");
+        names = dynamic_cast<vgui2::CheckButton*>(dialog->FindChildByName("hud_radar_names", false));
+        names->SetSelected(true);
+        Settle(*root);
+        dialog->OnCommand("Close");
+        Settle(*root);
+        Require(radarValues["hud_radar_names"] == 0.0f
+            && std::abs(radarValues["hud_radar_scale"] - 1.15f) < 0.001f,
+            "Cancel after Apply preserves committed settings and discards later edits");
+
+        dialog = new CHudRadarDialog(root);
+        dialog->SetScheme(scheme);
+        dialog->DoModal();
+        Settle(*root);
+        names = dynamic_cast<vgui2::CheckButton*>(dialog->FindChildByName("hud_radar_names", false));
+        names->SetSelected(true);
+        owner.Set(dialog);
+        dialog->OnCommand("OK");
+        Settle(*root);
+        Require(!owner.Get() && radarValues["hud_radar_names"] == 1.0f, "OK commits and closes radar settings");
+        radarValues["hud_radar_names"] = 0.0f;
+    }
+
+    for (const int style : {0, 1}) {
+        uiStyle = static_cast<float>(style);
+        for (const bool hoverTooltip : {false, true}) {
+            constexpr int ReopenCount = 3;
+            for (int reopen = 0; reopen < ReopenCount; ++reopen) {
+                auto* options = new TestOptions(root);
+                options->SetScheme(scheme);
+                options->Activate();
+                auto* page = dynamic_cast<COptionsSubInterface*>(options->FindChildByName("Interface", true));
+                Require(page, "reopened Options owns its Interface page");
+                options->GetPropertySheet()->SetActivePage(page);
+                Settle(*root);
+                auto* button = dynamic_cast<vgui2::Button*>(page->FindChildByName("RadarSettings", false));
+                Require(button && button->IsEnabled(), "reopened Interface enables the radar settings button");
+                button->DoClick();
+                Settle(*root);
+                auto* radar = dynamic_cast<CHudRadarDialog*>(page->FindChildByName("HudRadarDialog", false));
+                Require(radar && radar->IsVisible(), "Interface opens a live radar dialog on every visit");
+                vgui2::PHandle tooltipPopup;
+                if (hoverTooltip) {
+                    auto* shift = radar->FindChildByName("hud_radar_map_shift", false);
+                    Require(shift, "radar owns the map-shift tooltip control");
+                    auto* tooltip = shift->GetTooltip();
+                    tooltip->SetTooltipDelay(0);
+                    tooltip->ResetDelay();
+                    tooltip->ShowTooltip(shift);
+                    auto* popup = shift->FindChildByName("tooltip", false);
+                    Require(popup && popup->IsVisible(), "hover displays the real shared tooltip popup");
+                    tooltipPopup.Set(popup);
+                    if (reopen % 2 == 0) {
+                        tooltip->HideTooltip();
+                    }
+                }
+                vgui2::PHandle radarOwner;
+                radarOwner.Set(radar);
+                radar->OnCommand("Close");
+                Settle(*root);
+                Require(!radarOwner.Get(), "closing radar settings deletes the dialog before reopening");
+                if (auto* popup = tooltipPopup.Get()) {
+                    Require(!popup->IsVisible() && !popup->GetParent(),
+                        "closing a tooltip owner hides and detaches the shared popup");
+                }
+                vgui2::PHandle optionsOwner;
+                optionsOwner.Set(options);
+                options->OnClose();
+                Settle(*root);
+                Require(!optionsOwner.Get(), "closing all settings deletes the Options dialog");
+                Require(vgui2::input()->GetAppModalSurface() == 0, "closed radar settings leave no modal owner");
+            }
+        }
+    }
+    radarAvailable = false;
+    uiStyle = 0.0f;
+}
+
 int main(int argc, char** argv) {
     Require(argc == 7, "usage: interface_options_tests vgui fs resources output language platform");
     if (const char* width = std::getenv("CSE_UI_TEST_WIDTH")) {
@@ -408,6 +598,8 @@ int main(int argc, char** argv) {
         gEngfuncs.pfnClientCmd = RecordClientCommand;
         gEngfuncs.pfnGetCvarFloat = engine_fixture::GetCvar;
         gEngfuncs.Cvar_SetValue = engine_fixture::SetCvar;
+        gEngfuncs.pfnGetCvarPointer = engine_fixture::GetCvarPointer;
+        RunRadarSettings(root, tracker, output);
         keyboard_cell_fixture::Run(root, tracker, engine_fixture::uiStyle);
         smoked_metrics_fixture::Run(root, tracker, geometry, engine_fixture::uiStyle);
         options_reset_fixture::Run(root);
