@@ -36,7 +36,7 @@ BrowserSettingsDialog::BrowserSettingsDialog(vgui2::Panel* parent, BrowserSessio
     constexpr int FieldWidth = 300;
     constexpr int FieldHeight = 22;
     constexpr int ButtonWidth = 104;
-    constexpr int ButtonHeight = 24;
+    static constexpr int ButtonHeight = 24;
     constexpr int ButtonGap = 8;
     constexpr int RightButtonLeft = DialogWidth - Margin - ButtonWidth;
     constexpr int HelpTop = 266;

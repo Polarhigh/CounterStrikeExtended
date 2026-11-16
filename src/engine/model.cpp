@@ -285,7 +285,6 @@ model_t* Mod_LoadModel( model_t* mod, qboolean crash, qboolean trackCRC )
     if (length < static_cast<int>(sizeof(int))) {
         Mem_Free(buffer);
         Sys_Error("Mod_LoadModel: truncated identifier in %s", mod->name);
-        return nullptr;
     }
 
 	if ( trackCRC && mod_known_info[mod - mod_known].shouldCRC )

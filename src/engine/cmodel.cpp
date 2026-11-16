@@ -24,7 +24,6 @@ byte* CM_LeafPVS(int leafnum) {
     }
     if (leafnum < 0 || leafnum >= gPVSLeafCount) {
         Sys_Error("CM_LeafPVS: invalid leaf index");
-        return mod_novis;
     }
     return gPVS + static_cast<std::size_t>(leafnum) * gPVSRowBytes;
 }
@@ -35,7 +34,6 @@ byte* CM_LeafPAS(int leafnum) {
     }
     if (leafnum < 0 || leafnum >= gPVSLeafCount) {
         Sys_Error("CM_LeafPAS: invalid leaf index");
-        return mod_novis;
     }
     return gPAS + static_cast<std::size_t>(leafnum) * gPVSRowBytes;
 }
@@ -97,7 +95,6 @@ byte* Mod_DecompressVis(byte* input, model_t* model) {
         !Mod_DecodeVisibility(input, model, decompressed, rowBytes)) {
         std::memset(decompressed, 0, sizeof(decompressed));
         Sys_Error("Mod_DecompressVis: invalid visibility row");
-        return mod_novis;
     }
     return input ? decompressed : mod_novis;
 }
@@ -106,7 +103,6 @@ byte* Mod_LeafPVS(mleaf_t* leaf, model_t* model) {
     int index;
     if (!model || !ModelVisibility::LeafIndex(model, leaf, Mod_GetVisibilityInfo(model), index)) {
         Sys_Error("Mod_LeafPVS: invalid leaf");
-        return mod_novis;
     }
     if (index == 0) {
         return mod_novis;

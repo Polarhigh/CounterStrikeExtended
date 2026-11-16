@@ -79,7 +79,7 @@ void CLabeledCommandComboBox::SetInitialItem(int index) {
     ActivateItem(index);
 }
 
-void CLabeledCommandComboBox::OnTextChanged( const char* text )
+void CLabeledCommandComboBox::OnTextChanged( const char* )
 {
 	for ( int i = 0; i < m_Items.Size(); i++ )
 	{

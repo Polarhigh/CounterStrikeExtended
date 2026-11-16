@@ -33,6 +33,8 @@
 #include "vgui/IVGui.h"
 #include "vgui/KeyValues.h"
 
+#include <memory>
+
 #if defined(_WIN32)
 #include <direct.h>
 #include <io.h>
@@ -155,9 +157,9 @@ bool CRemoteServer::Bind(IGameServerData* provider, std::uint64_t generation) {
     // Updates have no wire request ID/generation. Discard the retired provider queue before new listeners exist.
     constexpr int MaximumPacketBytes = 65536;
     constexpr int MaximumRetiredPackets = 65536;
-    char discarded[MaximumPacketBytes];
+    const auto discarded = std::make_unique<char[]>(MaximumPacketBytes);
     int packets = 0;
-    while (provider->ReadDataResponse(discarded, sizeof(discarded)) > 0) {
+    while (provider->ReadDataResponse(discarded.get(), MaximumPacketBytes) > 0) {
         if (++packets == MaximumRetiredPackets) {
             return false;
         }
@@ -261,9 +263,10 @@ bool CRemoteServer::ProcessServerResponse() {
     bool processed = false;
     constexpr int MaximumPacketBytes = 65536;
     constexpr int MaximumNameBytes = 512;
+    const auto buffer = std::make_unique<char[]>(MaximumPacketBytes);
+    char* const packet = buffer.get();
     while (m_provider == provider && m_generation == generation) {
-        char packet[MaximumPacketBytes];
-        const int size = provider->ReadDataResponse(packet, sizeof(packet));
+        const int size = provider->ReadDataResponse(packet, MaximumPacketBytes);
         if (size <= 0) {
             break;
         }

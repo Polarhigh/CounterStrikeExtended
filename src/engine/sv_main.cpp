@@ -318,7 +318,6 @@ byte* SV_FatPVS(vec_t* org) {
     std::size_t bytes = 0;
     if (!sv.worldmodel || !ModelVisibility::RowBytes(sv.worldmodel->numleafs, bytes) || bytes > sizeof(fatpvs)) {
         Sys_Error("SV_FatPVS: invalid world leaf count");
-        return fatpvs;
     }
     fatbytes = static_cast<int>(bytes);
     Q_memset(fatpvs, 0, fatbytes);
@@ -365,7 +364,6 @@ byte* SV_FatPAS(vec_t* org) {
     std::size_t bytes = 0;
     if (!sv.worldmodel || !ModelVisibility::RowBytes(sv.worldmodel->numleafs, bytes) || bytes > sizeof(fatpas)) {
         Sys_Error("SV_FatPAS: invalid world leaf count");
-        return fatpas;
     }
     fatpasbytes = static_cast<int>(bytes);
     Q_memset(fatpas, 0, fatpasbytes);

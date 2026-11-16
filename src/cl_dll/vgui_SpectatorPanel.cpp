@@ -430,11 +430,11 @@ void SpectatorPanel::RefreshLanguage() {
     m_OptionButton->BindLanguageSource("#SPECT_OPTIONS");
     m_CamButton->BindLanguageSource(GetSpectatorLabel(g_iUser1));
     auto* schemes = gViewPort->GetSchemeManager();
-    Font* small = schemes->getFont(schemes->getSchemeHandle("Team Info Text"));
-    m_ExtraInfo->setFont(small);
-    m_CurrentTime->setFont(small);
+    Font* smallFont = schemes->getFont(schemes->getSchemeHandle("Team Info Text"));
+    m_ExtraInfo->setFont(smallFont);
+    m_CurrentTime->setFont(smallFont);
     for (int index = 0; index < TEAM_NUMBER; ++index) {
-        m_TeamScores[index]->setFont(small);
+        m_TeamScores[index]->setFont(smallFont);
     }
     char mode[64];
     snprintf(mode, sizeof(mode), "#Spec_Mode%d", g_iUser1);

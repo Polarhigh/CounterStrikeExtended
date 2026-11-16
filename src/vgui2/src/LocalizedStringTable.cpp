@@ -35,6 +35,7 @@
 #include "LocalizationCatalogue.h"
 #include "../vgui_surfacelib/FontManager.h"
 #include "../vgui_surfacelib/LocalizationFontBackend.h"
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <algorithm>
@@ -636,6 +637,8 @@ bool CLocalizedStringTable::AddAllLanguageFiles( IFileSystem* fileSystem, const 
 	fileSystem->FindClose( hFind );
 	return success;
 }
+
+#undef snprintf
 
 void CLocalizedStringTable::DiscardFastValueLookup()
 {

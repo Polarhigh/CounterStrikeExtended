@@ -358,7 +358,6 @@ model_t* Mod_LoadModel( model_t* mod, qboolean crash, qboolean trackCRC )
             FS_ReleaseReadBuffer(file, buf);
             FS_Close(file);
             Sys_Error("Mod_LoadModel: truncated identifier in %s", mod->name);
-            return nullptr;
         }
         if (!buf || LittleLong(ModelLoading::Read<int>(buf)) == IDSTUDIOHEADER) {
             if (buf) {
@@ -369,7 +368,6 @@ model_t* Mod_LoadModel( model_t* mod, qboolean crash, qboolean trackCRC )
             if (!ModelLoading::WritableModelFileSize(fileBytes)) {
                 FS_Close(file);
                 Sys_Error("Mod_LoadModel: invalid file size for %s", mod->name);
-                return nullptr;
             }
             length = static_cast<int>(fileBytes);
             buf = static_cast<byte*>(Hunk_TempAlloc(length + 1));
@@ -378,7 +376,6 @@ model_t* Mod_LoadModel( model_t* mod, qboolean crash, qboolean trackCRC )
             file = nullptr;
             if (initializedBytes != length) {
                 Sys_Error("Mod_LoadModel: incomplete read of %s", mod->name);
-                return nullptr;
             }
         }
 	}
@@ -1182,8 +1179,8 @@ void CalcSurfaceExtents(msurface_t* s) {
         return;
     }
     constexpr int MaximumSurfaceExtent = 512;
-    for (int i = 0; i < BrushModelLoading::TextureAxes; ++i) {
-        if (!(tex->flags & TEX_SPECIAL) && s->extents[i] > MaximumSurfaceExtent) {
+    for (int axis = 0; axis < BrushModelLoading::TextureAxes; ++axis) {
+        if (!(tex->flags & TEX_SPECIAL) && s->extents[axis] > MaximumSurfaceExtent) {
             Sys_Error("Bad surface extents %d/%d at position (%d,%d,%d)", s->extents[0], s->extents[1],
                       (int)v->position[0], (int)v->position[1], (int)v->position[2]);
         }
