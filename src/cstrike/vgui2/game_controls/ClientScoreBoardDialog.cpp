@@ -320,8 +320,8 @@ void CClientScoreBoardDialog::UpdateTeamInfo()
 	}
 
 	// recalc the team scores, then draw them
-	for ( int player = 1; player < gViewPortInterface->GetClientDllInterface()->GetMaxPlayers(); player++ )
-	{
+    const int maxPlayers = gViewPortInterface->GetClientDllInterface()->GetMaxPlayers();
+    for (int player = 1; player <= maxPlayers; ++player) {
 		VGuiLibraryPlayer_t playerInfo = gViewPortInterface->GetClientDllInterface()->CallEnghudGetPlayerInfo( player );
 		if ( !playerInfo.name || !playerInfo.teamname )
 			continue;
@@ -427,8 +427,8 @@ void CClientScoreBoardDialog::UpdatePlayerInfo()
 {
 	int selectedRow = -1;
 	m_iSectionId = 0;
-	for ( int player = 1; player < gViewPortInterface->GetClientDllInterface()->GetMaxPlayers(); player++ )
-	{
+    const int maxPlayers = gViewPortInterface->GetClientDllInterface()->GetMaxPlayers();
+    for (int player = 1; player <= maxPlayers; ++player) {
 		VGuiLibraryPlayer_t playerInfo = gViewPortInterface->GetClientDllInterface()->CallEnghudGetPlayerInfo( player );
 		if ( playerInfo.name )
 		{

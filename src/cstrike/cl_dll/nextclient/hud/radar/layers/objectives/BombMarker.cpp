@@ -31,28 +31,36 @@ bool InterpEntityPosition(cl_entity_t* ent, float target, ncl_math::Vector3& out
         return true;
     }
 
-    int cur = ent->current_position;
-    int idx0 = cur & kHistoryMask;
-    int idx1 = (cur - 1) & kHistoryMask;
+    const int current = ent->current_position;
+    int newer = current & kHistoryMask;
+    int older = (current - 1) & kHistoryMask;
+    int oldest = newer;
 
-    if (ent->ph[idx0].animtime >= target) {
-        for (int i = 1; i < kHistoryMask; i++) {
-            int p = (cur - i) & kHistoryMask;
-
-            if (ent->ph[p].animtime == 0.0f) {
+    if (ent->ph[newer].animtime >= target) {
+        for (int offset = 1; offset < HISTORY_MAX; ++offset) {
+            const int index = (current - offset) & kHistoryMask;
+            const float animTime = ent->ph[index].animtime;
+            if (animTime == 0.0f) {
                 break;
             }
 
-            if (ent->ph[p].animtime < target) {
-                idx0 = (cur - i + 1) & kHistoryMask;
-                idx1 = (cur - i) & kHistoryMask;
+            oldest = index;
+            if (animTime < target) {
+                newer = (current - offset + 1) & kHistoryMask;
+                older = index;
                 break;
             }
         }
     }
 
-    const position_history_t& ph0 = ent->ph[idx0];
-    const position_history_t& ph1 = ent->ph[idx1];
+    const position_history_t& oldestPose = ent->ph[oldest];
+    if (oldestPose.animtime != 0.0f && (target <= oldestPose.animtime || ent->ph[older].animtime == 0.0f)) {
+        out = ncl_math::Vector3::Ref(oldestPose.origin);
+        return true;
+    }
+
+    const position_history_t& ph0 = ent->ph[newer];
+    const position_history_t& ph1 = ent->ph[older];
 
     if (ph1.animtime == 0.0f || ph0.animtime <= ph1.animtime) {
         return false;

@@ -218,11 +218,10 @@ int CCSClientScoreBoardDialog::GetAvatarHeaderWidth()
 
 void CCSClientScoreBoardDialog::InitScoreboardSections()
 {
-	for ( int i = 1; i < 64; ++i )
-	{
-		g_PlayerExtraInfo[i].sb_health = -1;
-		g_PlayerExtraInfo[i].sb_account = -1;
-	}
+    for (int i = 1; i <= MAX_PLAYERS; ++i) {
+        g_PlayerExtraInfo[i].sb_health = -1;
+        g_PlayerExtraInfo[i].sb_account = -1;
+    }
 	m_iPlayersToShow = 0;
 	if ( !m_pShowHealth )
 	{
@@ -431,8 +430,8 @@ void CCSClientScoreBoardDialog::UpdateTeamInfo()
 	}
 
 	// recalc the team scores, then draw them
-	for ( int i = 1; i < 64; ++i )
-	{
+    const int maxPlayers = gViewPortInterface->GetClientDllInterface()->GetMaxPlayers();
+    for (int i = 1; i <= maxPlayers; ++i) {
 		VGuiLibraryPlayer_t player = gViewPortInterface->GetClientDllInterface()->CallEnghudGetPlayerInfo( i );
 		if ( player.name && ( player.teamnumber == 1 || player.teamnumber == 2 ) )
 		{
@@ -799,13 +798,14 @@ void CCSClientScoreBoardDialog::UpdatePlayerInfo()
 	gEngfuncs.pfnGetCvarFloat( "developer" );
 	m_pPlayerList->SetSectionFgColor( 1, GetTeamColor( 1 ) );
 	m_pPlayerList->SetSectionFgColor( 2, GetTeamColor( 2 ) );
-	int playersToShow = 0;
-	for ( int i = 1; i < 64; ++i )
-	{
-		VGuiLibraryPlayer_t player = gViewPortInterface->GetClientDllInterface()->CallEnghudGetPlayerInfo( i );
-		if ( player.name && i < gViewPortInterface->GetClientDllInterface()->GetMaxPlayers() )
-			++playersToShow;
-	}
+    const auto* client = gViewPortInterface->GetClientDllInterface();
+    const int maxPlayers = client->GetMaxPlayers();
+    int playersToShow = 0;
+    for (int i = 1; i <= maxPlayers; ++i) {
+        if (client->CallEnghudGetPlayerInfo(i).name) {
+            ++playersToShow;
+        }
+    }
 	m_iPlayersToShow = playersToShow;
 	if (cse::ui::ControlsSmokedGlass()) {
         constexpr int ReadableRowHeight = 26;
@@ -815,12 +815,10 @@ void CCSClientScoreBoardDialog::UpdatePlayerInfo()
     }
 	UpdateOptionalColumns();
 	UpdateHeaders();
-	int selectedItem = -1;
-	for ( int i = 1; i < 64; ++i )
-	{
-		VGuiLibraryPlayer_t player = gViewPortInterface->GetClientDllInterface()->CallEnghudGetPlayerInfo( i );
-		if ( player.name && gViewPortInterface->GetClientDllInterface()->GetMaxPlayers() > i )
-		{
+    int selectedItem = -1;
+    for (int i = 1; i <= maxPlayers; ++i) {
+        const VGuiLibraryPlayer_t player = client->CallEnghudGetPlayerInfo(i);
+        if (player.name) {
 			KeyValues* data = new KeyValues( "data" );
 			GetPlayerScoreInfo( i, data );
 			UpdatePlayerAvatar( i, data );
@@ -878,7 +876,7 @@ void CCSClientScoreBoardDialog::UpdatePlayerInfo()
 	m_pPlayerList->SetSectionAlwaysVisible( 4, true );
 	m_pPlayerList->SetSectionAlwaysVisible( 5, true );
 	ITaskVec* tasks = g_pCareerUI->GetCurrentTaskVec();
-	int playerIndex = gViewPortInterface->GetClientDllInterface()->GetMaxPlayers();
+    int playerIndex = MAX_PLAYERS; // Career task IDs start after the player slots.
 	for ( ITaskVecIt it = tasks->begin(); it != tasks->end(); ++it )
 	{
 		ICareerTask* task = *it;

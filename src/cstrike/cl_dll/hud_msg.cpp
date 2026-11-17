@@ -322,7 +322,7 @@ void CHud::SendAutoBuyString()
 		if ( scan )
 			strncat( command, " ", sizeof( command ) - strlen( command ) - 1 );
 	}
-	gEngfuncs.COM_FreeFile( NULL );
+    gEngfuncs.COM_FreeFile(file);
 	strncat( command, "\"", sizeof( command ) - strlen( command ) - 1 );
 	command[sizeof( command ) - 1] = 0;
 	gEngfuncs.pfnClientCmd( command );
@@ -346,7 +346,7 @@ void CHud::SendRebuyString()
 			first = false;
 		}
 	}
-	gEngfuncs.COM_FreeFile( NULL );
+    gEngfuncs.COM_FreeFile(file);
 	strncat( command, "\"", sizeof( command ) - strlen( command ) - 1 );
 	command[sizeof( command ) - 1] = 0;
 	gEngfuncs.pfnClientCmd( command );

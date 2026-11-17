@@ -15,6 +15,10 @@ int RadarFade_ComputeAlpha(const screenfade_t& sf, double time) {
         return 0;
     }
 
+    if (!(sf.fadeFlags & kFadeOut) && sf.fadeSpeed == 0.0f && sf.fadeEnd <= sf.fadeReset) {
+        return sf.fadealpha;
+    }
+
     int alpha;
 
     if (!(sf.fadeFlags & kFadeStayout)) {

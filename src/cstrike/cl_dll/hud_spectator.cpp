@@ -1043,8 +1043,8 @@ void CHudSpectator::FindPlayer(const char *name)
 
 	cl_entity_t * pEnt = NULL;
 
-	for (int i = 1; i < MAX_PLAYERS; i++ )
-	{
+    const int maxPlayers = gViewPortInterface->GetClientDllInterface()->GetMaxPlayers();
+    for (int i = 1; i <= maxPlayers; ++i) {
 
 		pEnt = gEngfuncs.GetEntityByIndex( i );
 

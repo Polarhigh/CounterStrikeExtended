@@ -38,44 +38,50 @@ void CL_ResetPositions( cl_entity_t* ent )
 }
 
 qboolean CL_FindInterpolationUpdates(
-	cl_entity_t* ent, float targettime, position_history_t** ph0, position_history_t** ph1, int* ph0Index )
-{
-	qboolean extrapolate;
-	int i, i0, i1, imod;
-	float at;
+    cl_entity_t* ent, float targettime, position_history_t** ph0, position_history_t** ph1, int* ph0Index) {
+    const int current = ent->current_position;
+    int newer = current & HISTORY_MASK;
+    int older = (current - 1) & HISTORY_MASK;
+    int oldest = newer;
+    qboolean extrapolate = TRUE;
 
-	imod = ent->current_position;
-	i0 = imod & HISTORY_MASK;
-	i1 = ( imod - 1 ) & HISTORY_MASK;
+    if (ent->ph[newer].animtime >= targettime) {
+        for (int offset = 1; offset < HISTORY_MAX; ++offset) {
+            const int index = (current - offset) & HISTORY_MASK;
+            const float animTime = ent->ph[index].animtime;
+            if (animTime == 0.0f) {
+                break;
+            }
 
-	extrapolate = TRUE;
+            oldest = index;
+            if (!(animTime >= targettime)) {
+                newer = (current - offset + 1) & HISTORY_MASK;
+                older = index;
+                extrapolate = FALSE;
+                break;
+            }
+        }
+    }
 
-	if ( ent->ph[i0].animtime >= targettime )
-	{
-		for ( i = 1; i < HISTORY_MAX - 1; i++ )
-		{
-			at = ent->ph[( imod - i ) & HISTORY_MASK].animtime;
-			if ( at == 0 )
-				break;
+    // Use one pose when the target predates the history or only one sample is available.
+    const float oldestTime = ent->ph[oldest].animtime;
+    if (extrapolate && oldestTime != 0.0f && (targettime <= oldestTime || ent->ph[older].animtime == 0.0f)) {
+        newer = oldest;
+        older = oldest;
+        extrapolate = FALSE;
+    }
 
-			if ( !( at >= targettime ) )
-			{
-				i0 = ( imod - i + 1 ) & HISTORY_MASK;
-				i1 = ( imod - i ) & HISTORY_MASK;
-				extrapolate = FALSE;
-				break;
-			}
-		}
-	}
+    if (ph0) {
+        *ph0 = &ent->ph[newer];
+    }
+    if (ph1) {
+        *ph1 = &ent->ph[older];
+    }
+    if (ph0Index) {
+        *ph0Index = newer;
+    }
 
-	if ( ph0 )
-		*ph0 = &ent->ph[i0];
-	if ( ph1 )
-		*ph1 = &ent->ph[i1];
-	if ( ph0Index )
-		*ph0Index = i0;
-
-	return extrapolate;
+    return extrapolate;
 }
 
 void CL_PureOrigin( cl_entity_t* ent, float targettime, vec_t* outorigin, vec_t* outangles )
