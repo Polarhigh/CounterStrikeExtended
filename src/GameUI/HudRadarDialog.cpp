@@ -78,7 +78,7 @@ CHudRadarDialog::CHudRadarDialog(vgui2::Panel* parent) : BaseClass(parent, "HudR
     int workspaceTall = 0;
     vgui2::surface()->GetWorkspaceBounds(workspaceX, workspaceY, workspaceWide, workspaceTall);
     const float scale =
-        std::min({vgui2::smoked::PixelScale(), static_cast<float>(workspaceWide - ScreenMargin * 2) / DesignWidth,
+        (std::min)({vgui2::smoked::PixelScale(), static_cast<float>(workspaceWide - ScreenMargin * 2) / DesignWidth,
                   static_cast<float>(workspaceTall - ScreenMargin * 2) / DesignHeight});
     SetSize(static_cast<int>(DesignWidth * scale), static_cast<int>(DesignHeight * scale));
 

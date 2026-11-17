@@ -82,11 +82,11 @@ void HostageMarkers::DrawDot(const RadarFrame& frame, ncl_math::Vector3 world, i
     frame.draw.DrawLayerIndicator(placement.indicator, style.vertical, dot, color);
 }
 
-void HostageMarkers::DrawBySight(const RadarFrame& frame, const ObjectiveEntities& entities, int dot) {
-    if (entities.is_test_due()) {
+void HostageMarkers::DrawBySight(const RadarFrame& frame, const ObjectiveEntities& objectives, int dot) {
+    if (objectives.is_test_due()) {
         ClearVisibility();
 
-        for (const ObjectiveEntities::HostageEnt& h : entities.get_hostages()) {
+        for (const ObjectiveEntities::HostageEnt& h : objectives.get_hostages()) {
             if (!visibility_.CheckPointVisible(h.origin, frame.time)) {
                 continue;
             }
@@ -100,7 +100,7 @@ void HostageMarkers::DrawBySight(const RadarFrame& frame, const ObjectiveEntitie
         }
     }
 
-    for (const ObjectiveEntities::HostageEnt& hostage_ent : entities.get_hostages()) {
+    for (const ObjectiveEntities::HostageEnt& hostage_ent : objectives.get_hostages()) {
         auto spot = std::ranges::find_if(spots_, [&hostage_ent](const Spot& spot) {
             return spot.valid && spot.visible && spot.key == hostage_ent.index;
         });
@@ -132,11 +132,11 @@ void HostageMarkers::DrawBySight(const RadarFrame& frame, const ObjectiveEntitie
     frame.draw.EndPrims();
 }
 
-void HostageMarkers::DrawRevealed(const RadarFrame& frame, const ObjectiveEntities& entities, int dot) {
+void HostageMarkers::DrawRevealed(const RadarFrame& frame, const ObjectiveEntities& objectives, int dot) {
     MarkerIdentity::Entity carried[kRadarMaxHostages];
     int carried_count = 0;
 
-    for (const ObjectiveEntities::HostageEnt& hostage : entities.get_hostages()) {
+    for (const ObjectiveEntities::HostageEnt& hostage : objectives.get_hostages()) {
         carried[carried_count++] = {hostage.index, hostage.origin, hostage.discontinuity};
     }
 
@@ -215,7 +215,7 @@ void HostageMarkers::DrawServerMarkers(const RadarFrame& frame, int size) {
     frame.draw.EndPrims();
 }
 
-void HostageMarkers::Draw(const RadarFrame& frame, const ObjectiveEntities& entities, int dot) {
+void HostageMarkers::Draw(const RadarFrame& frame, const ObjectiveEntities& objectives, int dot) {
     HostageSource source = ObjectiveSource_ChooseHostages(
         policy_.get_hostage_intent(), {frame.ctx.local_team, frame.ctx.spectating}, policy_.are_hostages_revealed());
 
@@ -226,10 +226,10 @@ void HostageMarkers::Draw(const RadarFrame& frame, const ObjectiveEntities& enti
             DrawServerMarkers(frame, dot);
             break;
         case HostageSource::Sight:
-            DrawBySight(frame, entities, dot);
+            DrawBySight(frame, objectives, dot);
             break;
         case HostageSource::Revealed:
-            DrawRevealed(frame, entities, dot);
+            DrawRevealed(frame, objectives, dot);
             break;
     }
 }

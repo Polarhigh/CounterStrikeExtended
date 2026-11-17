@@ -1,5 +1,11 @@
 #pragma once
 
+#if defined(_WIN32) && !defined(_WINDOWS_)
+// Let the Windows headers define APIENTRY when GLAD was included first.
+#undef APIENTRY
+#include <windows.h>
+#endif
+
 // Use the owning hardware renderer definitions: the legacy SDK com_model.h
 // describes software surfaces and cannot read this runtime's brush models.
 #define NormalizeAngles NativeRadar_UnusedEngineNormalizeAngles
@@ -10,6 +16,7 @@
 #undef VectorAdd
 #undef VectorSubtract
 #undef DotProduct
+#include "enums.h"
 #include "hud.h"
 
 #include "cl_entity.h"
@@ -28,7 +35,7 @@
 #include "event_args.h"
 #include "cvardef.h"
 
-extern playermove_t* pmove;
+extern "C" playermove_t* pmove;
 
 inline constexpr int MAX_HOSTAGES = 24;
 inline constexpr int TEAM_UNASSIGNED = 0;

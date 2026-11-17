@@ -64,7 +64,7 @@ constexpr int kPlayerHullCount = 4;
 bool g_MapUnavailable;
 
 void LogPolicyMessage(const char* message) {
-    gEngfuncs.Con_Printf("radar: %s\n", message);
+    gEngfuncs.Con_Printf(const_cast<char*>("radar: %s\n"), message);
 }
 
 // Optional server-set mode hint, broadcast as "serverinfo nc_ffa 1".
@@ -272,7 +272,7 @@ bool HudRadarAdvanced::ShouldDraw() {
     bool spectating = g_iUser1 != 0 || gEngfuncs.IsSpectateOnly();
 
     if (spectating) {
-        float inset = gEngfuncs.pfnGetCvarFloat("spec_pip");
+        float inset = gEngfuncs.pfnGetCvarFloat(const_cast<char*>("spec_pip"));
         return g_iUser1 != OBS_MAP_FREE && g_iUser1 != OBS_MAP_CHASE && inset != INSET_MAP_FREE &&
                inset != INSET_MAP_CHASE;
     }
@@ -394,7 +394,7 @@ void HudRadarAdvanced::UpdatePolicy(float flTime) {
 
 void HudRadarAdvanced::ReportLayerFailure(RadarMapMode mode, int layer) {
     std::string_view reason = layer_lifecycle_.get_failure_reason();
-    gEngfuncs.Con_Printf("radar: layers fallback map=%s mode=%d layer=%d reason=%.*s\n", layer_map_,
+    gEngfuncs.Con_Printf(const_cast<char*>("radar: layers fallback map=%s mode=%d layer=%d reason=%.*s\n"), layer_map_,
                          static_cast<int>(mode), layer, (int)reason.size(), reason.data());
 }
 
@@ -467,7 +467,7 @@ RadarMapStatus HudRadarAdvanced::EnsureMapLayers(RadarMapMode mode) {
         layer_analysis_ms_ = float(result->duration_ns) / 1000000.0f;
 
         if (!result->warning.empty()) {
-            gEngfuncs.Con_Printf("radar: %s: %s\n", layer_correction_path_, result->warning.c_str());
+            gEngfuncs.Con_Printf(const_cast<char*>("radar: %s: %s\n"), layer_correction_path_, result->warning.c_str());
         }
 
         if (layer_lifecycle_.SetGeometryStatus(result->status, result->failure_reason)) {
@@ -557,7 +557,7 @@ RadarMapStatus HudRadarAdvanced::EnsureMapLayers(RadarMapMode mode) {
             if (MapLayerOverrides_Parse(tokens, parsed, error)) {
                 overrides.emplace(std::move(parsed));
             } else {
-                gEngfuncs.Con_Printf("radar: %s: %s\n", path, error.c_str());
+                gEngfuncs.Con_Printf(const_cast<char*>("radar: %s: %s\n"), path, error.c_str());
             }
         }
 

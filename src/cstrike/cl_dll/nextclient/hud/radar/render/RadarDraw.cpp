@@ -569,7 +569,7 @@ void RadarDrawContext::Init() {
                         0, &error_log, &callbacks);
 
     if (!mask_.ok) {
-        gEngfuncs.Con_DPrintf("radar mask shader failed: %s\n", error_log.c_str());
+        gEngfuncs.Con_DPrintf(const_cast<char*>("radar mask shader failed: %s\n"), error_log.c_str());
     }
 
     if (mask_.ok) {
@@ -583,7 +583,7 @@ void RadarDrawContext::Init() {
                         kAttrCount, &error_log, &callbacks);
 
     if (!prim_.ok) {
-        gEngfuncs.Con_DPrintf("radar prim shader failed: %s\n", error_log.c_str());
+        gEngfuncs.Con_DPrintf(const_cast<char*>("radar prim shader failed: %s\n"), error_log.c_str());
     }
 
     if (prim_.ok) {
@@ -601,7 +601,7 @@ void RadarDrawContext::Init() {
                         nullptr, 0, &error_log, &callbacks);
 
     if (!blur_.ok) {
-        gEngfuncs.Con_DPrintf("radar backdrop shader failed: %s\n", error_log.c_str());
+        gEngfuncs.Con_DPrintf(const_cast<char*>("radar backdrop shader failed: %s\n"), error_log.c_str());
     }
 
     if (blur_.ok) {

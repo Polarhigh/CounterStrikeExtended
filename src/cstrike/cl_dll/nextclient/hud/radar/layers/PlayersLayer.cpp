@@ -194,7 +194,7 @@ void PlayersLayer::OnPlayerRespawn(ResetReason reason, float previous_time, floa
     reset_time_ = time;
 
     if (RadarDebug_IsEnabled()) {
-        gEngfuncs.Con_Printf("radar reset: count=%d reason=%s previous_time=%.6f time=%.6f message=%d\n",
+        gEngfuncs.Con_Printf(const_cast<char*>("radar reset: count=%d reason=%s previous_time=%.6f time=%.6f message=%d\n"),
                              marker_resets_, ResetReasonName(reason), previous_time, time, NativeRadar_MessageNumber());
     }
 
@@ -209,8 +209,8 @@ void PlayersLayer::OnPlayerRespawn(ResetReason reason, float previous_time, floa
 
 void PlayersLayer::DumpMarkers() const {
     gEngfuncs.Con_Printf(
-        "radar resets: total=%d hud=%d init_hud=%d video=%d player_clock=%d radar_clock=%d team=%d observer=%d "
-        "last=%s previous_time=%.6f time=%.6f\n",
+        const_cast<char*>("radar resets: total=%d hud=%d init_hud=%d video=%d player_clock=%d radar_clock=%d team=%d observer=%d "
+        "last=%s previous_time=%.6f time=%.6f\n"),
         marker_resets_, reset_counts_[(size_t)ResetReason::Hud], reset_counts_[(size_t)ResetReason::InitHud],
         reset_counts_[(size_t)ResetReason::Video], reset_counts_[(size_t)ResetReason::PlayerClock],
         reset_counts_[(size_t)ResetReason::RadarClock], reset_counts_[(size_t)ResetReason::Team],
@@ -220,7 +220,7 @@ void PlayersLayer::DumpMarkers() const {
 
     int sample_count = marker_history_.CopySamples(samples);
     float span = sample_count > 0 ? samples[sample_count - 1].frame.time - samples[0].frame.time : 0.0f;
-    gEngfuncs.Con_Printf("radar marker history: samples=%d span=%.3f; enable hud_radar_debug 1 before reproducing\n",
+    gEngfuncs.Con_Printf(const_cast<char*>("radar marker history: samples=%d span=%.3f; enable hud_radar_debug 1 before reproducing\n"),
                          sample_count, span);
 
     for (int sample = 0; sample < sample_count; sample++) {
@@ -229,7 +229,7 @@ void PlayersLayer::DumpMarkers() const {
 
     int message_num = NativeRadar_MessageNumber();
     float time = gEngfuncs.GetClientTime();
-    gEngfuncs.Con_Printf("radar markers: time=%.3f drawn_time=%.3f message=%d spectating=%d\n", time, last_time_,
+    gEngfuncs.Con_Printf(const_cast<char*>("radar markers: time=%.3f drawn_time=%.3f message=%d spectating=%d\n"), time, last_time_,
                          message_num, spectating_);
 
     int max_clients = std::min<int>(kRadarMaxPlayers, gEngfuncs.GetMaxClients());
@@ -243,9 +243,9 @@ void PlayersLayer::DumpMarkers() const {
 
         const RadarBroadcast::Player& report = broadcast_.get_player(i);
         const ncl_math::Vector3& shown = prev_pos_[i];
-        gEngfuncs.Con_Printf("player=%d team=%d drawn=%d current=%d messages=%d/%d effects=%d "
+        gEngfuncs.Con_Printf(const_cast<char*>("player=%d team=%d drawn=%d current=%d messages=%d/%d effects=%d "
                              "raw=(%.1f %.1f %.1f) interpolated=(%.1f %.1f %.1f) shown=(%.1f %.1f %.1f) "
-                             "radar_seq=%u radar_age=%.3f radar=(%.1f %.1f %.1f)\n",
+                             "radar_seq=%u radar_age=%.3f radar=(%.1f %.1f %.1f)\n"),
                              i, g_PlayerExtraInfo[i].teamnumber, drawn_[i], entity->curstate.messagenum == message_num,
                              entity->prevstate.messagenum, entity->curstate.messagenum, entity->curstate.effects,
                              entity->curstate.origin[0], entity->curstate.origin[1], entity->curstate.origin[2],

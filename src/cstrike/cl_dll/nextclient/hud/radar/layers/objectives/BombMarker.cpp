@@ -143,10 +143,10 @@ void BombMarker::DrawMarker(const RadarFrame& frame, ncl_math::Vector3 world, in
     frame.draw.EndPrims();
 }
 
-void BombMarker::DrawFromBroadcast(const RadarFrame& frame, const ObjectiveEntities& entities, int size,
+void BombMarker::DrawFromBroadcast(const RadarFrame& frame, const ObjectiveEntities& objectives, int size,
                                    float interp_lag) {
     const RadarBroadcast::Bomb& bomb = broadcast_.get_bomb();
-    const ObjectiveEntities::BombEnt& live = entities.get_bomb();
+    const ObjectiveEntities::BombEnt& live = objectives.get_bomb();
 
     bool reported =
         bomb.active && ObjectiveSource_IsBombReportCurrent(bomb.planted, frame.time - bomb.time, frame.ctx.spectating);
@@ -194,14 +194,14 @@ void BombMarker::DrawFromBroadcast(const RadarFrame& frame, const ObjectiveEntit
     DrawMarker(frame, bomb_pos, size, planted, 1.0f);
 }
 
-void BombMarker::DrawFromSight(const RadarFrame& frame, const ObjectiveEntities& entities, int size, float interp_lag) {
-    const ObjectiveEntities::BombEnt& live = entities.get_bomb();
+void BombMarker::DrawFromSight(const RadarFrame& frame, const ObjectiveEntities& objectives, int size, float interp_lag) {
+    const ObjectiveEntities::BombEnt& live = objectives.get_bomb();
 
     if (!live.found) {
         visible_ = false;
     } else {
         // RadarVisibility defers its physent rebuild to the frame's first test, so untested frames are free.
-        if (entities.is_test_due()) {
+        if (objectives.is_test_due()) {
             visible_ = visibility_.CheckPointVisible(ncl_math::Vector3::Ref(live.ent->origin), frame.time);
         }
 
@@ -262,7 +262,7 @@ void BombMarker::DrawServerMarker(const RadarFrame& frame, int size) {
     frame.draw.EndPrims();
 }
 
-void BombMarker::Draw(const RadarFrame& frame, const ObjectiveEntities& entities, int size) {
+void BombMarker::Draw(const RadarFrame& frame, const ObjectiveEntities& objectives, int size) {
     BombSource source =
         ObjectiveSource_ChooseBomb(policy_.get_bomb_intent(), {frame.ctx.local_team, frame.ctx.spectating});
 
@@ -276,8 +276,8 @@ void BombMarker::Draw(const RadarFrame& frame, const ObjectiveEntities& entities
     marker_valid_ = false;
 
     if (source == BombSource::Broadcast) {
-        DrawFromBroadcast(frame, entities, size, ComputeInterpLag());
+        DrawFromBroadcast(frame, objectives, size, ComputeInterpLag());
     } else if (source == BombSource::Sight) {
-        DrawFromSight(frame, entities, size, ComputeInterpLag());
+        DrawFromSight(frame, objectives, size, ComputeInterpLag());
     }
 }

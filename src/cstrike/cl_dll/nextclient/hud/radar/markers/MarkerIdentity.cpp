@@ -35,11 +35,11 @@ bool MarkerIdentity::is_ent_paired(int ent) const {
     return std::ranges::any_of(entries_, [ent](const Entry& entry) { return entry.used && entry.ent == ent; });
 }
 
-void MarkerIdentity::RecheckPair(Entry& entry, std::span<const Entity> entities, ncl_math::Vector3 pos) {
-    auto paired = std::ranges::find_if(entities, [&entry](const Entity& entity) { return entity.ent == entry.ent; });
+void MarkerIdentity::RecheckPair(Entry& entry, std::span<const Entity> snapshot, ncl_math::Vector3 pos) {
+    auto paired = std::ranges::find_if(snapshot, [&entry](const Entity& entity) { return entity.ent == entry.ent; });
 
     // Outside the snapshot there is nothing to hold the pair against.
-    if (paired == entities.end()) {
+    if (paired == snapshot.end()) {
         return;
     }
 
@@ -54,7 +54,7 @@ void MarkerIdentity::RecheckPair(Entry& entry, std::span<const Entity> entities,
     }
 }
 
-void MarkerIdentity::Update(std::span<const Entity> entities, std::span<const Observation> observations) {
+void MarkerIdentity::Update(std::span<const Entity> snapshot, std::span<const Observation> observations) {
     struct Match {
         Entry* entry;
         int ent;
@@ -74,14 +74,14 @@ void MarkerIdentity::Update(std::span<const Entity> entities, std::span<const Ob
         entry->seq = observation.seq;
 
         if (entry->ent >= 0) {
-            RecheckPair(*entry, entities, observation.pos);
+            RecheckPair(*entry, snapshot, observation.pos);
             continue;
         }
 
         int best_ent = -1;
         float best_dist_sqr = params_.match_tolerance * params_.match_tolerance;
 
-        for (const Entity& entity : entities) {
+        for (const Entity& entity : snapshot) {
             if (is_ent_paired(entity.ent)) {
                 continue;
             }

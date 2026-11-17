@@ -43,7 +43,7 @@ void Hooked_DrawSetTextColor(float r, float g, float b) {
 int Hooked_DrawConsoleString(int x, int y, char* string) {
     int result = g_TextBuffer.DrawConsoleString(x, y, string);
     // DrawConsoleString resets the engine ambient text colour to con_color.
-    const char* color = gEngfuncs.pfnGetCvarString("con_color");
+    const char* color = gEngfuncs.pfnGetCvarString(const_cast<char*>("con_color"));
     int r = 0;
     int g = 0;
     int b = 0;
