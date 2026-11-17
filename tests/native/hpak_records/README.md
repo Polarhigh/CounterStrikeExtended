@@ -22,12 +22,12 @@ claiming a real VFS large-file test. Native heap allocations must exceed 4 GiB.
 It saves `created.hpk`, `two-entries.hpk` and `four-entries.hpk` for comparisons
 with preserved Win32 writers.
 
-Two existing console-owner behaviors are characterized in both versions:
-`HPAK_RemoveLump` selects `Cmd_Argv(1)`, and its one-entry path deletes the archive
-before matching the requested hash. They are not layout fixes. The multi-entry
-missing-hash path now frees its temporary native directories. Short I/O prevents
-publishing a replacement; rename/flush failure behavior remains a separate VFS
-gate. The global legacy `COM_CopyFileChunk` is unchanged; HPAK uses a local
+Removal coverage checks that the caller's archive is selected even when the
+console argument names another package. A one-entry archive is preserved when
+the digest differs, and the console command removes it when the digest matches.
+Reference mode records the original archive selection and final-entry behavior.
+Short I/O prevents publishing a replacement. Rename and flush failure behavior
+remains a separate VFS gate. The global legacy `COM_CopyFileChunk` is unchanged; HPAK uses a local
 checked copy. The reference fixture binding retains the legacy helper's ignored
 byte-count behavior, and unrelated CRC file functions abort if reached.
 
