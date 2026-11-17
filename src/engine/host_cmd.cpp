@@ -1668,7 +1668,6 @@ TYPEDESCRIPTION gLightstyleDescription[] =
 void ParseSaveTables( SAVERESTOREDATA* pSaveData, SAVE_HEADER* pHeader, int updateGlobals )
 {
 	int i;
-	SAVELIGHTSTYLE light;
 
 	// Re-base the savedata since we re-ordered the entity/table / restore fields
 	for ( i = 0; i < pSaveData->tableCount; i++ )
@@ -1696,21 +1695,28 @@ void ParseSaveTables( SAVERESTOREDATA* pSaveData, SAVE_HEADER* pHeader, int upda
 			ARRAYSIZE( gAdjacencyDescription ) );
 	}
 
-	if ( updateGlobals )
-		memset( sv.lightstyles, 0, sizeof( sv.lightstyles ) );
+    if (updateGlobals) {
+        memset(sv.lightstyles, 0, sizeof(sv.lightstyles));
+    }
 
-	for ( i = 0; i < pHeader->lightStyleCount; i++ )
-	{
-		gEntityInterface.pfnSaveReadFields(
-			pSaveData, "LIGHTSTYLE", &light, gLightstyleDescription, ARRAYSIZE( gLightstyleDescription ) );
+    for (i = 0; i < pHeader->lightStyleCount; i++) {
+        SAVELIGHTSTYLE light{};
+        gEntityInterface.pfnSaveReadFields(
+            pSaveData, "LIGHTSTYLE", &light, gLightstyleDescription, ARRAYSIZE(gLightstyleDescription));
 
-		if ( updateGlobals )
-		{
-			sv.lightstyles[light.index] = (char*)Hunk_Alloc( Q_strlen( light.style ) + 1 );
-			Q_strncpy( sv.lightstyles[light.index], light.style, 3 );
-			sv.lightstyles[light.index][3] = '\0';
-		}
-	}
+        if (!updateGlobals) {
+            continue;
+        }
+        if (light.index < 0 || light.index >= MAX_LIGHTSTYLES) {
+            Con_Printf("Ignoring invalid saved lightstyle index %d\n", light.index);
+            continue;
+        }
+
+        light.style[sizeof(light.style) - 1] = '\0';
+        const int styleBytes = Q_strlen(light.style) + 1;
+        sv.lightstyles[light.index] = static_cast<char*>(Hunk_Alloc(styleBytes));
+        Q_memcpy(sv.lightstyles[light.index], light.style, styleBytes);
+    }
 }
 
 //-----------------------------------------------------------------------------

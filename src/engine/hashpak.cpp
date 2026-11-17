@@ -934,7 +934,7 @@ void HPAK_RemoveLump( const char* pakname, resource_t* pResource )
 
 	HPAK_FlushHostQueue();
 
-	snprintf( name, 256, "%s", Cmd_Argv( 1 ) );
+    snprintf(name, sizeof(szOriginalName), "%s", pakname);
 	COM_DefaultExtension( name, ".hpk" );
 
 	Q_strncpy( szOriginalName, name, sizeof( szOriginalName ) - 1 );
@@ -997,16 +997,6 @@ void HPAK_RemoveLump( const char* pakname, resource_t* pResource )
 		return;
 	}
 
-	if ( olddirectory.nEntries == 1 )
-	{
-		Con_Printf( "Removing final lump from HPAK, deleting HPAK:\n  %s\n", szOriginalName );
-		FS_Close( tmp );
-		FS_Close( fp );
-		FS_Unlink( szTempName );
-		FS_Unlink( szOriginalName );
-		return;
-	}
-
 	olddirectory.p_rgEntries = (hash_pack_entry_t*)Mem_Malloc( sizeof( hash_pack_entry_t ) * olddirectory.nEntries );
     if (!HPAK_ReadEntries(fp, &olddirectory)) {
         Mem_Free(olddirectory.p_rgEntries);
@@ -1017,19 +1007,28 @@ void HPAK_RemoveLump( const char* pakname, resource_t* pResource )
         return;
     }
 
-	newdirectory.nEntries = olddirectory.nEntries - 1;
-	newdirectory.p_rgEntries = (hash_pack_entry_t*)Mem_Malloc( sizeof( hash_pack_entry_t ) * newdirectory.nEntries );
-
-	if ( !HPAK_FindResource( &olddirectory, pResource->rgucMD5_hash, NULL ) )
-	{
-		Con_Printf( "ERROR: HPAK doesn't contain specified lump:  %s\n", pResource->szFileName );
-        Mem_Free(newdirectory.p_rgEntries);
+    if (!HPAK_FindResource(&olddirectory, pResource->rgucMD5_hash, nullptr)) {
+        Con_Printf("ERROR: HPAK doesn't contain specified lump:  %s\n", pResource->szFileName);
         Mem_Free(olddirectory.p_rgEntries);
-		FS_Close( tmp );
-		FS_Close( fp );
-		FS_Unlink( szTempName );
-		return;
-	}
+        FS_Close(tmp);
+        FS_Close(fp);
+        FS_Unlink(szTempName);
+        return;
+    }
+
+    if (olddirectory.nEntries == 1) {
+        Con_Printf("Removing final lump from HPAK, deleting HPAK:\n  %s\n", szOriginalName);
+        Mem_Free(olddirectory.p_rgEntries);
+        FS_Close(tmp);
+        FS_Close(fp);
+        FS_Unlink(szTempName);
+        FS_Unlink(szOriginalName);
+        return;
+    }
+
+    newdirectory.nEntries = olddirectory.nEntries - 1;
+    newdirectory.p_rgEntries = static_cast<hash_pack_entry_t*>(
+        Mem_Malloc(sizeof(hash_pack_entry_t) * newdirectory.nEntries));
 
     int retainedEntries = 0;
     std::uint64_t compactedDirectoryOffset = HpakDiskHeaderBytes;

@@ -512,7 +512,13 @@ int main(int argc, char** argv) {
     Save(std::string(argv[2]) + "/two-entries.hpk", twoEntries);
     HPAK_RemoveLump("fixture", &second);
     CHECK(files["fixture.hpk"] == authored);
-    HPAK_RemoveLump("fixture", &resource);
+    if (!reference) {
+        HPAK_RemoveLump("fixture", &second);
+        CHECK(files.count("fixture.hpk") == 1 && files["fixture.hpk"] == authored);
+        CHECK(!files.count("fixture.hp2") && handles.empty() && allocations.empty());
+    }
+    command = {"hpkremove", "fixture", "1"};
+    HPAK_Remove_f();
     CHECK(!files.count("fixture.hpk"));
     CHECK(handles.empty() && allocations.empty());
 
@@ -532,15 +538,18 @@ int main(int argc, char** argv) {
     CHECK(files["other.hpk"] == authored);
     CHECK(handles.empty() && allocations.empty());
 
-    // Keep the existing console-owner contract visible: RemoveLump selects
-    // Cmd_Argv(1), and a one-entry archive is removed before hash lookup.
     Reset(authored);
     files["fixture.hpk"] = twoEntries;
-    files["other.hpk"] = twoEntries;
-    HPAK_RemoveLump("other", &second);
-    CHECK(files["fixture.hpk"] == authored && files["other.hpk"] == twoEntries);
-    HPAK_RemoveLump("fixture", &second);
-    CHECK(!files.count("fixture.hpk"));
+    files["custom.hpk"] = twoEntries;
+    HPAK_RemoveLump("custom.hpk", &second);
+    if (reference) {
+        CHECK(files["fixture.hpk"] == authored && files["custom.hpk"] == twoEntries);
+        HPAK_RemoveLump("fixture", &second);
+        CHECK(!files.count("fixture.hpk"));
+    } else {
+        CHECK(files["fixture.hpk"] == twoEntries && files["custom.hpk"] == authored);
+        CHECK(!files.count("custom.hp2"));
+    }
     CHECK(handles.empty() && allocations.empty());
 
     struct OwnedLump {
