@@ -971,19 +971,47 @@ Status SubmitNativeIndexed(const std::vector<Vertex>& vertices, const std::vecto
                 return;
             }
         }
-        Command command;
-        command.op = Op::DrawNative;
-        command.argument = static_cast<std::uint32_t>(Primitive::Triangles);
-        command.second = perVertexColor ? 1 : 0;
-        command.vertices.reserve(indices.size());
-        for (const auto index : indices) {
-            command.vertices.push_back(vertices[index]);
+        if (!indices.empty()) {
+            Command command;
+            command.op = Op::DrawNative;
+            command.argument = static_cast<std::uint32_t>(Primitive::Triangles);
+            command.second = perVertexColor ? 1 : 0;
+            command.vertices = vertices;
+            command.indices = indices;
+            Capture(command);
         }
-        Capture(command);
         const auto& last = vertices[lastVertex];
         CaptureValues(Op::TexCoord, {{last.texcoords[0][0], last.texcoords[0][1]}}, 0);
         if (perVertexColor) {
             CaptureValues(Op::Color, {{last.color[0], last.color[1], last.color[2], last.color[3]}});
+        }
+    });
+    return failure;
+}
+
+Status SubmitNativeQuad(const std::array<Vertex, 4>& vertices) {
+    operationContext = "SubmitNativeQuad";
+    if (!Native()) {
+        return Status::InvalidOperation;
+    }
+    CaptureOwned([&] {
+        const auto result = recorder->SubmitQuad(vertices);
+        if (result != Status::Ok) {
+            Refuse(result);
+        }
+    });
+    return failure;
+}
+
+Status SubmitNativeSurface(const std::shared_ptr<const SurfaceMesh>& mesh, float scroll, bool detail) {
+    operationContext = "SubmitNativeSurface";
+    if (!Native()) {
+        return Status::InvalidOperation;
+    }
+    CaptureOwned([&] {
+        const auto result = recorder->SubmitSurface(mesh, scroll, detail);
+        if (result != Status::Ok) {
+            Refuse(result);
         }
     });
     return failure;

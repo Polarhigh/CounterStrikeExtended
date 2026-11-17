@@ -1,5 +1,17 @@
 # Metal renderer qualification
 
+Nonfinite geometry is filtered at primitive assembly. Triangles and line segments retain their
+original connectivity across gaps in strips, fans and loops; quads and convex polygons are whole
+primitives. Other primitives in the same packet survive, including shared indexed geometry.
+Flat shading uses the original provoking color, and disabled texture coordinates do not invalidate
+visible geometry. Bad transforms discard only packets using them; restoring the matrix resumes drawing.
+Structural errors, invalid indices and storage limits remain errors. The first numeric discard is
+logged once per Metal session.
+
+`metal-nonfinite-geometry` covers the CPU topology and attribute cases. `metal-session-device`
+compares full images of clean and mixed-invalid draws for indexed and nonindexed GPU submissions.
+Shared effect input, simulation and pool-reuse checks live in [effects_safety](../effects_safety/README.md).
+
 These fixtures exercise the production CPU preparation, recorder/backend and actual
 SDL_GPU `metal` device. They do not replace the historical bounded prototype tests.
 Run from the repository root on macOS 14+ ARM64 with the repository's pinned, source-built SDL3:
@@ -21,16 +33,18 @@ Metal-only no-GL requirement is verified separately in actual-game audits.
 
 | Fixture | Evidence |
 | --- | --- |
-| `metal-draw-preparation` | Matrices, topology, provoking vertices, texture conversion and uniforms |
-| `metal-session-device` | Actual render/readback, texture versions, palette enable, incomplete textures, sampler min/mag, explicit four-tap border anisotropy, clears, viewport mapping and failure retirement |
+| `metal-draw-preparation` | Matrices, indexed topology, provoking vertices, texture conversion and uniforms |
+| `metal-session-device` | Actual render/readback, resident upload reuse, exact mesh/immediate color/scroll/detail/fog/blend/wire output, indexed offsets, adjacent draw coalescing with uniform/texture/scissor barriers and transparent order, texture versions, palette enable, incomplete textures, sampler min/mag, explicit four-tap border anisotropy, clears, viewport mapping and failure retirement |
+| `metal-mesh-pages` | Actual page rollover, bounded 128 MiB residency, equivalent streaming under cache pressure, sole-page retirement during pending work and balanced GPU buffer ownership |
 | `renderer-backend-lifecycle` | Startup upload, flush/reopen, retained presentation capture across pending window resizes, absent-presentation handling, real-window resize/minimize/restore, teardown and sticky errors |
 | `renderer-backend-large-precache` | 768 MiB of retained source textures through the production backend, followed by first-use rendering of early and late uploads |
 | `renderer-backend-ram-budget` | Runtime budget selection below, at and above 8 GiB of installed RAM, including unavailable RAM information |
+| `renderer-backend-device-mode` | Actual SDL_GPU device creation enables validation only in Debug, independently of NDEBUG |
 | `renderer-selection` | Default/override/conflict policy, Metal-disabled and non-Apple behavior |
 | `radar-public-release` | Actual engine interface factory/table callback: null, half-null, stale and current-unavailable handles |
 | `metal-radar-effects` | Layer depth/order, independent base/lightmap modulation, tone, texture lifetime, generated-image retirement, aggregate map-index/per-draw expansion bounds, glyph shadow, pre-HUD blur and odd resize |
 | `metal-lifetime-names` | 131,072 generations with one live reservation, all 65,535 simultaneous names, explicit exhaustion and reuse |
-| `metal-lifetime-session` | 96 completed NPOT updates under a three-image source budget, exact retained bytes and persistent live-cache reuse |
+| `metal-lifetime-session` | 96 completed NPOT updates under a three-image source budget, exact retained bytes, persistent live-cache reuse and no image reupload after redundant sampler parameters |
 | `metal-lifetime-radar` | 96 register/upload/delete cycles without querying stale handles, exact source reclamation and balanced actual SDL GPU ownership |
 | `metal-lifetime-radar-records` | 96 abandoned identities with counted weak control blocks, proving stale registry records are erased at frame sweeps |
 | `metal-lifetime-queued-reuse` | Deleted/reused numeric name, distinct generations/service handles, independent old/new queued pixels and final source retirement |
@@ -111,3 +125,68 @@ establish higher achievable FPS or GPU execution speed. Whole-process peak RSS w
 474 MiB for both Metal replays and 523–524 MiB for OpenGL. A separate live Metal map
 cycle peaked at 647 MiB and exited normally. RSS was sampled every 0.5 seconds and
 excludes separate helper processes; it is not GPU residency or a long-duration leak test.
+
+## Uncapped performance regression check
+
+The November 17, 2026 follow-up used a recorded multiplayer demo on the same M5 Max
+at 2560×1440, default MSAA, VSync disabled and `-nosound`. Timedemo bypassed the FPS
+cap. Each row measures connected frames 500–2499 of the same 3,000-frame replay;
+all 2,000 selected frames were focused. These frame intervals include CPU and GPU
+waiting; they are not isolated GPU timings.
+
+| Warm replay | Frame interval p50 / p95 (ms) |
+| --- | ---: |
+| Original Metal Release | 3.674 / 5.340 |
+| Updated Metal Release A | 3.085 / 5.578 |
+| Updated Metal Release B | 3.154 / 5.256 |
+| OpenGL | 1.503 / 3.438 |
+
+The update selects GPU validation explicitly from the CMake configuration, copies
+filled smooth triangle lists directly, coalesces adjacent draws with identical GPU
+state, and preserves uploaded image identities across redundant sampler updates.
+Median Metal frame time fell by 14–16% in these warm repeats. Tail latency did not
+consistently improve, and OpenGL remained faster. This bounded replay does not
+establish performance parity or predict the improvement on an M1 or another server.
+
+## Native mesh and quad submissions
+
+The subsequent native path keeps immutable world/brush polygons in bounded GPU arena
+pages and submits their material/transform snapshots directly. Studio submissions retain
+unique vertices and uint32 indices; flat/wire modes retain their equivalent lowering.
+Built-in textured UI and glyph quads bypass individual vertex commands. Specialized
+water/sky/effects and external legacy callers retain their compatible rendering paths.
+
+Per-draw entity color and scrolling precede the existing texture matrices. Lightmap
+updates, detail textures, transparency order and polygon boundary wireframe are retained.
+CPU source geometry and resident GPU mesh pages each have a 128 MiB cache bound. A full
+cache uses the same streamed geometry/shaders, without dropping surfaces or changing
+quality. Map/model clears and lightmap rebuilds retire ownership; queued frames and
+submitted SDL_GPU commands retain the resources they still need.
+
+The final same-machine 2560×1440 replay compared against local checkpoint `cd2ed9cd`,
+which already includes the earlier Release-device/submission fixes. Default 4x MSAA,
+filtering, effects and VSync-off settings were identical. After a warm-up, runs alternated
+checkpoint/native/checkpoint/native. Each row contains connected completed frames
+500–2499, all 2,000 focused, with `-nosound` and the same local demo/assets.
+
+| Replay | Frame interval p50 / p95 / mean (ms) |
+| --- | ---: |
+| Checkpoint A | 3.124 / 5.312 / 3.447 |
+| Native A | 2.504 / 6.304 / 3.138 |
+| Checkpoint B | 3.166 / 5.386 / 3.479 |
+| Native B | 2.488 / 6.404 / 3.125 |
+
+Median FPS increased by 25–27%; mean replay throughput increased by 10–11%. Tail frame
+times regressed, so this is a throughput improvement, not an across-the-board frame-pacing
+improvement or OpenGL parity claim. No graphics setting, feature or pixel tolerance was
+reduced. These measurements are from M5 Max; M1 performance has not been measured.
+
+The final native fixtures passed 18/18 in Release and Debug ASan/UBSan, including real
+GPU page rollover, budget fallback and queued page retirement. Shared recorder suites
+passed 22/22 with and without ASan/UBSan, and dispatch passed 48/48. The macOS ARM64
+launcher/runtime built; changed OpenGL-only owners passed a separate syntax check.
+Independent source review found no actionable defects. Actual local Counter-Strike and
+Half-Life runs cover screenshots and map changes, with Original/Smoked UI and classic/
+advanced radar exercised in Counter-Strike. This is bounded coverage, not an exhaustive
+feature or M1/Windows execution qualification. Per-run logs, runtime cohorts, CSVs and
+captures are retained under ignored `build/native-metal-20261117/`.

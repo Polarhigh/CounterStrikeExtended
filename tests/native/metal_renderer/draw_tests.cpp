@@ -40,6 +40,29 @@ int main() {
         CHECK(vertex.color[1] == 1 && vertex.color[0] == 0);
     }
     CHECK(prepared.vertices[3].position == draw.vertices[0].position);
+    auto indexed = Quad();
+    indexed.primitive = Primitive::Triangles;
+    indexed.shade = Shade::Smooth;
+    indexed.raster.shade = Shade::Smooth;
+    indexed.indices = {0, 1, 2, 0, 2, 3};
+    CHECK(PrepareMetalDraw(indexed, prepared, error));
+    CHECK(prepared.vertices.size() == indexed.vertices.size() && prepared.indices == indexed.indices);
+    CHECK(prepared.vertices[3].color == indexed.vertices[3].color);
+    indexed.indices[0] = static_cast<std::uint32_t>(indexed.vertices.size());
+    CHECK(!PrepareMetalDraw(indexed, prepared, error));
+    CHECK(prepared.indices == std::vector<std::uint32_t>({0, 1, 2, 0, 2, 3}));
+    indexed.indices = {0, 1, 3, 0, 3, 2};
+    indexed.shade = Shade::Flat;
+    indexed.raster.shade = Shade::Flat;
+    indexed.vertices[2].color = {{1, 0, 0, 1}};
+    CHECK(PrepareMetalDraw(indexed, prepared, error));
+    CHECK(prepared.indices.empty() && prepared.vertices.size() == indexed.indices.size());
+    CHECK(prepared.vertices[0].color == indexed.vertices[3].color);
+    CHECK(prepared.vertices[3].color == indexed.vertices[2].color);
+    indexed.raster.polygonMode = {{PolygonMode::Line, PolygonMode::Line}};
+    CHECK(PrepareMetalDraw(indexed, prepared, error));
+    CHECK(prepared.indices.empty() && prepared.topology == Primitive::Lines && prepared.vertices.size() == 12);
+    CHECK(PrepareMetalDraw(draw, prepared, error));
     draw.primitive = Primitive::Polygon;
     draw.vertices[0].color = {{1, 0, 0, 1}};
     CHECK(PrepareMetalDraw(draw, prepared, error));
@@ -52,6 +75,18 @@ int main() {
     draw.primitive = Primitive::LineLoop;
     CHECK(PrepareMetalDraw(draw, prepared, error));
     CHECK(prepared.topology == Primitive::Lines && prepared.vertices.size() == 8);
+    draw = Quad();
+    draw.primitive = Primitive::Triangles;
+    draw.shade = Shade::Smooth;
+    draw.vertices[0].color = {{-0.5f, 0.25f, 1.5f, 0.75f}};
+    CHECK(PrepareMetalDraw(draw, prepared, error));
+    CHECK(prepared.vertices.size() == 3);
+    CHECK(prepared.vertices[0].color == (std::array<float, 4>{{0, 0.25f, 1, 0.75f}}));
+    CHECK(prepared.vertices[2].position == draw.vertices[2].position);
+    // An incomplete trailing primitive has no geometry to reject.
+    draw.vertices[3].position[0] = std::numeric_limits<float>::infinity();
+    CHECK(PrepareMetalDraw(draw, prepared, error));
+    CHECK(prepared.vertices.size() == 3);
     draw = Quad();
     draw.raster.polygonMode = {{PolygonMode::Line, PolygonMode::Line}};
     CHECK(PrepareMetalDraw(draw, prepared, error));
@@ -129,7 +164,8 @@ int main() {
     image->pixels.pop_back();
     CHECK(!PrepareMetalTexture(*object, palette, texture, error));
     draw.vertices[0].position[0] = std::numeric_limits<float>::infinity();
-    CHECK(!PrepareMetalDraw(draw, prepared, error));
+    CHECK(PrepareMetalDraw(draw, prepared, error));
+    CHECK(prepared.vertices.empty() && prepared.discardedNonfinite);
     draw = Quad();
     draw.primitive = Primitive::Polygon;
     draw.vertices.resize(600000);

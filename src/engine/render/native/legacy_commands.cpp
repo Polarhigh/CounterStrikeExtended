@@ -1,4 +1,5 @@
 #include "legacy_commands.h"
+#include "surface_mesh.h"
 #include "capture_allocation.h"
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,10 @@ bool ValidPrimitive(std::uint32_t value) {
     return value <= static_cast<std::uint32_t>(Primitive::LineLoop);
 }
 
+std::size_t GeometryCost(const Command& command) {
+    return std::max(command.vertices.size(), command.indices.size());
+}
+
 bool Integral(double value, int& result) {
     if (!std::isfinite(value) || value < std::numeric_limits<int>::min()
         || value > std::numeric_limits<int>::max() || value != std::floor(value)) {
@@ -19,6 +24,14 @@ bool Integral(double value, int& result) {
     }
     result = static_cast<int>(value);
     return true;
+}
+
+bool NonfiniteProjection(const Command& command) {
+    return (command.op == Op::Ortho || command.op == Op::Frustum) &&
+        std::any_of(command.values.begin(), command.values.end(),
+            [](double value) {
+                return !std::isfinite(value);
+            });
 }
 
 Status ValidateArguments(const Command& command) {
@@ -136,6 +149,9 @@ Status ValidateArguments(const Command& command) {
         break;
     case Op::Ortho:
     case Op::Frustum:
+        if (NonfiniteProjection(command)) {
+            break;
+        }
         if (command.values[0] == command.values[1] || command.values[2] == command.values[3]
             || command.values[4] == command.values[5]) {
             return Status::InvalidValue;
@@ -146,11 +162,8 @@ Status ValidateArguments(const Command& command) {
         break;
     case Op::LoadMatrix:
     case Op::MultiplyMatrix:
-        for (const auto value : command.matrix.values) {
-            if (!std::isfinite(value)) {
-                return Status::InvalidValue;
-            }
-        }
+        // Retain nonfinite transforms until draw preparation. Ignoring them would draw affected
+        // geometry under the previous transform; refusing them would terminate an otherwise valid frame.
         break;
     case Op::ColorWrite:
     case Op::Identity:
@@ -296,7 +309,7 @@ Status Recorder::EndList() {
     const std::size_t oldCommands = old == lists_.end() ? 0 : old->second.size();
     if (old != lists_.end()) {
         for (const auto& command : old->second) {
-            oldVertices += command.vertices.size();
+            oldVertices += GeometryCost(command);
             oldVertices += command.op == Op::Vertex ? 1 : 0;
             oldBytes += command.upload.bytes.size();
         }
@@ -325,7 +338,7 @@ Status Recorder::DeleteList(std::uint32_t id) {
     const auto old = lists_.find(id);
     if (old != lists_.end()) {
         for (const auto& command : old->second) {
-            storedVertices_ -= command.vertices.size();
+            storedVertices_ -= GeometryCost(command);
             storedVertices_ -= command.op == Op::Vertex ? 1 : 0;
             storedUploadBytes_ -= command.upload.bytes.size();
         }
@@ -339,6 +352,21 @@ Status Recorder::Submit(const Command& input) {
     if (input.upload.bytes.size() > kTextureUploadBytes || input.names.size() > kTextureNames ||
         (compiling_ && input.upload.bytes.size() > limits_.listUploadBytes - pendingUploadBytes_)) {
         return Status::LimitExceeded;
+    }
+    if (!input.indices.empty()) {
+        constexpr std::size_t kIndicesPerTriangle = 3;
+        if (input.op != Op::DrawNative || input.argument != static_cast<std::uint32_t>(Primitive::Triangles) ||
+            input.indices.size() % kIndicesPerTriangle != 0) {
+            return Status::InvalidOperation;
+        }
+        if (input.indices.size() > limits_.verticesPerDraw) {
+            return Status::LimitExceeded;
+        }
+        for (const auto index : input.indices) {
+            if (index >= input.vertices.size()) {
+                return Status::InvalidValue;
+            }
+        }
     }
     Command captured;
     const bool upload = input.op == Op::TextureImage || input.op == Op::TextureSubImage;
@@ -375,7 +403,7 @@ Status Recorder::Submit(const Command& input) {
         if (command.op == Op::Begin && !ValidPrimitive(command.argument)) {
             return Status::InvalidValue;
         }
-        const auto addition = command.vertices.size() + (command.op == Op::Vertex ? 1 : 0);
+        const auto addition = GeometryCost(command) + (command.op == Op::Vertex ? 1 : 0);
         if (command.vertices.size() > limits_.verticesPerDraw
             || addition > limits_.storedVertices - pendingVertices_) {
             return Status::LimitExceeded;
@@ -406,7 +434,7 @@ Status Recorder::Submit(const Command& input) {
             BeforeCaptureAllocation(CaptureAllocationSite::ListUploadCopy);
         }
         pendingList_.push_back(command);
-        pendingVertices_ += command.vertices.size() + (command.op == Op::Vertex ? 1 : 0);
+        pendingVertices_ += GeometryCost(command) + (command.op == Op::Vertex ? 1 : 0);
         pendingUploadBytes_ += command.upload.bytes.size();
         if (command.op == Op::Begin || command.op == Op::End) {
             compileBegin_ = command.op == Op::Begin;
@@ -415,11 +443,62 @@ Status Recorder::Submit(const Command& input) {
     return result;
 }
 
-Status Recorder::AppendDraw(DrawPacket& draw) {
-    if (draws_.size() >= limits_.drawPackets || draw.vertices.size() > limits_.frameVertices - frameVertices_) {
+Status Recorder::SubmitQuad(const std::array<Vertex, 4>& vertices) {
+    if (!AtFrameBoundary()) {
+        return Status::InvalidOperation;
+    }
+    if (vertices.size() > limits_.verticesPerDraw) {
         return Status::LimitExceeded;
     }
-    const auto vertices = draw.vertices.size();
+    auto draw = Snapshot(Primitive::Quads);
+    draw.vertices.assign(vertices.begin(), vertices.end());
+    for (auto& vertex : draw.vertices) {
+        vertex.color = state_.Current().color;
+        for (std::size_t unit = 1; unit < kTextureUnits; ++unit) {
+            vertex.texcoords[unit] = state_.Current().texcoords[unit];
+        }
+    }
+    const auto result = AppendDraw(draw);
+    if (result == Status::Ok) {
+        state_.TexCoord(0, vertices.back().texcoords[0][0], vertices.back().texcoords[0][1]);
+    }
+    return result;
+}
+
+Status Recorder::SubmitSurface(const std::shared_ptr<const SurfaceMesh>& mesh, float scroll, bool detail) {
+    if (!AtFrameBoundary()) {
+        return Status::InvalidOperation;
+    }
+    if (!mesh) {
+        return Status::InvalidValue;
+    }
+    if (std::max(mesh->Vertices().size(), mesh->Indices().size()) > limits_.verticesPerDraw) {
+        return Status::LimitExceeded;
+    }
+    auto draw = Snapshot(Primitive::Polygon);
+    draw.mesh = mesh;
+    draw.meshColor = state_.Current().color;
+    draw.meshUvOffset[0][0] = scroll;
+    draw.meshUvOffset[2][0] = detail ? scroll : 0;
+    const auto result = AppendDraw(draw);
+    if (result != Status::Ok) {
+        return result;
+    }
+    const auto& last = mesh->Vertices().back();
+    state_.TexCoord(0, last.texcoords[0][0] + scroll, last.texcoords[0][1]);
+    state_.TexCoord(1, last.texcoords[1][0], last.texcoords[1][1]);
+    if (detail) {
+        state_.TexCoord(2, last.texcoords[2][0] + scroll, last.texcoords[2][1]);
+    }
+    return Status::Ok;
+}
+
+Status Recorder::AppendDraw(DrawPacket& draw) {
+    const auto vertices = draw.mesh ? std::max(draw.mesh->Vertices().size(), draw.mesh->Indices().size()) :
+        std::max(draw.vertices.size(), draw.indices.size());
+    if (draws_.size() >= limits_.drawPackets || vertices > limits_.frameVertices - frameVertices_) {
+        return Status::LimitExceeded;
+    }
     draws_.push_back(std::move(draw));
     frameVertices_ += vertices;
     return Status::Ok;
@@ -470,9 +549,15 @@ Status Recorder::Execute(const Command& command, std::size_t depth, std::size_t&
         state_.Rotate(f(0), f(1), f(2), f(3));
         break;
     case Op::Ortho:
-        return state_.Ortho(v[0], v[1], v[2], v[3], v[4], v[5]);
     case Op::Frustum:
-        return state_.Frustum(v[0], v[1], v[2], v[3], v[4], v[5]);
+        if (NonfiniteProjection(command)) {
+            Matrix4 invalid;
+            invalid.values.fill(std::numeric_limits<float>::quiet_NaN());
+            state_.MultiplyMatrix(invalid);
+            break;
+        }
+        return command.op == Op::Ortho ? state_.Ortho(v[0], v[1], v[2], v[3], v[4], v[5]) :
+            state_.Frustum(v[0], v[1], v[2], v[3], v[4], v[5]);
     case Op::Color:
         state_.Color(f(0), f(1), f(2), f(3));
         break;
@@ -645,6 +730,10 @@ Status Recorder::Execute(const Command& command, std::size_t depth, std::size_t&
             BeforeCaptureAllocation(CaptureAllocationSite::DrawSnapshotCopy);
         }
         draw.vertices = command.vertices;
+        if (!command.indices.empty()) {
+            BeforeCaptureAllocation(CaptureAllocationSite::DrawSnapshotCopy);
+            draw.indices = command.indices;
+        }
         for (auto& vertex : draw.vertices) {
             if (command.op != Op::DrawNative || !command.second) {
                 vertex.color = state_.Current().color;
@@ -687,6 +776,35 @@ Status ExpandTopology(const DrawPacket& draw, std::vector<Vertex>& output, Primi
     }
     if (draw.vertices.size() > kMaximumVertices) {
         return Status::LimitExceeded;
+    }
+    if (!draw.indices.empty()) {
+        constexpr std::size_t kIndicesPerTriangle = 3;
+        if (draw.primitive != Primitive::Triangles || draw.indices.size() % kIndicesPerTriangle != 0) {
+            return Status::InvalidValue;
+        }
+        if (draw.indices.size() > kMaximumVertices) {
+            return Status::LimitExceeded;
+        }
+        for (const auto index : draw.indices) {
+            if (index >= draw.vertices.size()) {
+                return Status::InvalidValue;
+            }
+        }
+        std::vector<Vertex> expanded;
+        expanded.reserve(draw.indices.size());
+        for (std::size_t first = 0; first < draw.indices.size(); first += kIndicesPerTriangle) {
+            const auto provoking = draw.indices[first + kIndicesPerTriangle - 1];
+            for (std::size_t corner = 0; corner < kIndicesPerTriangle; ++corner) {
+                auto vertex = draw.vertices[draw.indices[first + corner]];
+                if (draw.shade == Shade::Flat) {
+                    vertex.color = draw.vertices[provoking].color;
+                }
+                expanded.push_back(vertex);
+            }
+        }
+        output = std::move(expanded);
+        topology = Primitive::Triangles;
+        return Status::Ok;
     }
     std::vector<Vertex> result;
     const auto emit = [&draw, &result](std::initializer_list<std::size_t> indices, std::size_t provoking) {

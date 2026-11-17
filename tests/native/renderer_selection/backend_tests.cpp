@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -52,11 +53,19 @@ NATIVE_SLOTS(NATIVE_CHECK_SIGNATURE)
 namespace {
 constexpr int kBaselineSystemRamMiB = 8 * 1024;
 int systemRamMiB = kBaselineSystemRamMiB;
+int createdDeviceDebugMode = -1;
 }
 
 // Supply installed RAM independently of the host so both runtime budgets are exercised.
 extern "C" int SDLCALL SDL_GetSystemRAM(void) {
     return systemRamMiB;
+}
+
+extern "C" SDL_GPUDevice* SDLCALL SDL_CreateGPUDevice(SDL_GPUShaderFormat formats, bool debug, const char* driver) {
+    const auto original = reinterpret_cast<decltype(&SDL_CreateGPUDevice)>(dlsym(RTLD_NEXT, "SDL_CreateGPUDevice"));
+    CHECK(original);
+    createdDeviceDebugMode = debug ? 1 : 0;
+    return original(formats, debug, driver);
 }
 
 void RuntimeTextureBudgets(SDL_Window* window) {
@@ -148,6 +157,14 @@ int main(int argc, char** argv) {
         return 0;
     }
     CHECK(InitializeBackend(window, error));
+    if (argc == 2 && std::string(argv[1]) == "device-mode") {
+        CHECK(createdDeviceDebugMode == CSE_EXPECT_METAL_DEBUG_DEVICE);
+        ShutdownBackend();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        std::cout << "runtime GPU device validation matches the build configuration\n";
+        return 0;
+    }
     CHECK(!BackendSceneActive());
     int absentWidth = 1;
     int absentHeight = 1;
@@ -172,6 +189,13 @@ int main(int argc, char** argv) {
     CHECK(BackendUploadSucceeded());
     BeginBackendFrame(32, 32);
     CHECK(BackendSceneActive());
+    CseRenderViewport(0, 0, 32, 32);
+    CseRenderColor4ub(128, 64, 255, 192);
+    CHECK(SubmitBackendQuad({{-1, -1, 1, 1}}, {{0, 0, 1, 1}}));
+    std::array<unsigned char, 4> quadPixel{};
+    CHECK(BackendReadPixels(false, 8, 8, 1, 1, 4, 1, quadPixel.data()));
+    CHECK((quadPixel == std::array<unsigned char, 4>{{128, 64, 255, 192}}));
+    CseRenderColor4f(1, 1, 1, 1);
     CseRenderClearColor(1, 0, 0, 1);
     CseRenderClear(GL_COLOR_BUFFER_BIT);
     FlushBackend();

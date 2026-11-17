@@ -1,4 +1,5 @@
 #include "legacy_commands.h"
+#include "surface_mesh_cache.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -87,7 +88,83 @@ void Lists() {
     Check(recorder.Draws().size() == 2, "undefined list ignored, old draws remain owned");
 }
 
+void NativeSurfaces() {
+    constexpr std::size_t kStride = 7;
+    const std::array<float, 28> polygon{{-1, -1, 0, 0, 0, 0.25f, 0.5f,
+        1, -1, 0, 1, 0, 0.75f, 0.5f, 1, 1, 0, 1, 1, 0.75f, 1, -1, 1, 0, 0, 1, 0.25f, 1}};
+    SurfaceMeshCache cache;
+    std::string error;
+    auto mesh = cache.Get(polygon.data(), polygon.data(), 4, kStride, error);
+    Check(mesh && mesh->Vertices().size() == 4 && mesh->Indices().size() == 6, "native polygon fan ownership");
+    Check(mesh->Vertices()[2].texcoords[0] == std::array<float, 4>{{1, 1, 0, 1}}, "base UV preserved");
+    Check(mesh->Vertices()[2].texcoords[1] == std::array<float, 4>{{0.75f, 1, 0, 1}}, "lightmap UV preserved");
+    Check(mesh->Vertices()[2].texcoords[2] == mesh->Vertices()[2].texcoords[0], "detail UV precedes texture matrix");
+    Check(cache.Get(polygon.data(), polygon.data(), 4, kStride, error) == mesh, "native mesh reused");
+    Recorder recorder;
+    Send(recorder, Make(Op::Color, {0.25, 0.5, 0.75, 0.5}));
+    Check(recorder.SubmitSurface(mesh, 0.25f, true) == Status::Ok, "direct native surface capture");
+    Check(recorder.Draws()[0].vertices.empty() && recorder.Draws()[0].mesh == mesh, "capture retains immutable mesh");
+    Check(recorder.Draws()[0].meshColor == recorder.State().Current().color, "entity color captured per draw");
+    Check(recorder.Draws()[0].meshUvOffset[0][0] == 0.25f &&
+        recorder.Draws()[0].meshUvOffset[2][0] == 0.25f, "scroll applies to diffuse and detail only");
+    Check(recorder.State().Current().texcoords[0][0] == 0.25f &&
+        recorder.State().Current().texcoords[1][0] == 0.25f &&
+        recorder.State().Current().texcoords[2][0] == 0.25f, "surface leaves final GL texture attributes current");
+    std::array<Vertex, 4> quad{};
+    for (std::size_t index = 0; index < quad.size(); ++index) {
+        quad[index].position = mesh->Vertices()[index].position;
+        quad[index].texcoords[0] = mesh->Vertices()[index].texcoords[0];
+    }
+    Check(recorder.SubmitQuad(quad) == Status::Ok, "direct native UI quad capture");
+    Check(recorder.Draws().back().primitive == Primitive::Quads && recorder.Draws().back().vertices.size() == 4,
+        "UI quad retains boundary topology for flat and wire modes");
+    Check(recorder.Draws().back().vertices[0].color == recorder.State().Current().color &&
+        recorder.Draws().back().vertices[0].texcoords[1] == recorder.State().Current().texcoords[1],
+        "UI quad inherits current color and secondary coordinates");
+    Check(recorder.State().Current().texcoords[0] == quad.back().texcoords[0],
+        "UI quad leaves final unit-zero coordinate current");
+    cache.Clear();
+    auto replacement = cache.Get(polygon.data(), polygon.data(), 4, kStride, error);
+    Check(replacement && replacement != mesh && recorder.Draws()[0].mesh == mesh,
+        "map reset retires identities while queued frames retain geometry");
+    CaptureLimits limits;
+    limits.frameVertices = 5;
+    Recorder bounded(limits);
+    Check(bounded.SubmitSurface(mesh, 0, false) == Status::LimitExceeded && bounded.Draws().empty(),
+        "direct meshes preserve expanded index capture quota");
+    const float invalid = std::numeric_limits<float>::infinity();
+    quad[0].position[0] = invalid;
+    Check(recorder.SubmitQuad(quad) == Status::Ok &&
+        recorder.Draws().back().vertices[0].position[0] == invalid,
+        "direct quads reach primitive filtering without poisoning capture");
+    Check(recorder.SubmitSurface(mesh, invalid, false) == Status::Ok,
+        "invalid surface offsets reach draw filtering");
+    auto badPolygon = polygon;
+    badPolygon[0] = invalid;
+    Check(!cache.Get(badPolygon.data(), badPolygon.data(), 4, kStride, error) && error.empty(),
+        "nonfinite cache inputs fall back to filtered immediate geometry");
+    Send(recorder, Make(Op::Push));
+    auto matrix = Make(Op::LoadMatrix);
+    matrix.matrix = Matrix4::Identity();
+    matrix.matrix.values[12] = invalid;
+    Send(recorder, matrix);
+    Check(recorder.SubmitQuad(quad) == Status::Ok, "invalid transform stays local to its draw");
+    Send(recorder, Make(Op::Pop));
+    Check(recorder.State().Matrix(MatrixMode::ModelView).values == Matrix4::Identity().values,
+        "restoring a matrix recovers valid rendering after a bad transform");
+    for (const auto operation : {Op::Ortho, Op::Frustum}) {
+        Send(recorder, Make(Op::Push));
+        Send(recorder, Make(operation, {std::numeric_limits<double>::quiet_NaN(), 1, -1, 1, 1, 10}));
+        Check(!std::isfinite(recorder.State().Matrix(MatrixMode::ModelView).values[0]),
+            "nonfinite projection inputs mark only the active transform invalid");
+        Send(recorder, Make(Op::Pop));
+        Check(recorder.State().Matrix(MatrixMode::ModelView).values == Matrix4::Identity().values,
+            "valid rendering recovers after a bad projection");
+    }
+}
+
 void Ownership() {
+    NativeSurfaces();
     Recorder copy;
     {
         Recorder source;
@@ -120,9 +197,13 @@ void Bounds() {
     Check(recorder.Submit(Make(Op::Frustum, {-1, 1, -1, 1, 0, 10})) == Status::InvalidValue,
         "invalid near plane rejected");
     Check(recorder.State().Matrix(MatrixMode::ModelView).values == original, "failed matrix operation atomic");
-    Check(recorder.Submit(Make(Op::Frustum, {-1.0e-100, 1.0e-100, -1, 1, 1, 10})) == Status::InvalidValue,
-        "unrepresentable projection coefficient rejected before narrowing");
-    Check(recorder.State().Matrix(MatrixMode::ModelView).values == original, "projection coefficient failure atomic");
+    Send(recorder, Make(Op::Push));
+    Check(recorder.Submit(Make(Op::Frustum, {-1.0e-100, 1.0e-100, -1, 1, 1, 10})) == Status::Ok,
+        "unrepresentable numeric projections reach local draw filtering without narrowing overflow");
+    Check(!std::isfinite(recorder.State().Matrix(MatrixMode::ModelView).values[0]),
+        "unrepresentable projection is marked invalid instead of drawing with stale state");
+    Send(recorder, Make(Op::Pop));
+    Check(recorder.State().Matrix(MatrixMode::ModelView).values == original, "projection restoration is exact");
     for (std::size_t index = 1; index < kModelViewStackDepth; ++index) {
         Send(recorder, Make(Op::Push));
     }
@@ -184,6 +265,15 @@ void Topology() {
     Check(output[3].position[0] == 2 && output[4].position[0] == 1 && output[5].position[0] == 3,
         "odd strip winding preserved");
     Check(output[3].color[0] == 0.75f && output[4].color[0] == 0.75f, "provoking color retained");
+    draw.primitive = Primitive::Triangles;
+    draw.indices = {0, 1, 2, 0, 2, 3};
+    Check(ExpandTopology(draw, output, result) == Status::Ok && output.size() == draw.indices.size(),
+        "indexed topology expands for compatibility consumers");
+    Check(output[0].color[0] == 0.5f && output[3].color[0] == 0.75f,
+        "indexed provoking colors retained");
+    draw.indices[0] = static_cast<std::uint32_t>(draw.vertices.size());
+    Check(ExpandTopology(draw, output, result) == Status::InvalidValue && output.size() == 6,
+        "invalid indexed topology read beyond vertices or replaced output");
     draw.primitive = Primitive::Quads;
     Check(ExpandTopology(draw, output, result) == Status::UnsupportedTopology, "unqualified quad lowering explicit");
 }
