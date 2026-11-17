@@ -943,8 +943,8 @@ void CSpectatorGUI::UpdateSpectatorPlayerList()
     presentation.rows.clear();
 	m_pBottomBar->m_pPlayerList->DeleteAllItems();
 	int itemID = 0;
-	for ( int player = 1; player < gViewPortInterface->GetClientDllInterface()->GetMaxPlayers(); ++player )
-	{
+    const int maxPlayers = gViewPortInterface->GetClientDllInterface()->GetMaxPlayers();
+    for (int player = 1; player <= maxPlayers; ++player) {
 		VGuiLibraryPlayer_t info = gViewPortInterface->GetClientDllInterface()->CallEnghudGetPlayerInfo( player );
 		if ( !info.name || info.thisplayer || info.dead || !CanSpectateTeam( info.teamnumber ) )
 			continue;

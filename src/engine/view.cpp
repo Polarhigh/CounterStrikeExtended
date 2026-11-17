@@ -403,9 +403,6 @@ int V_ScreenFade( const char*, int, void* pbuf )
 	cl.sf.fadeSpeed = 0.0f;
 	cl.sf.fadeFlags = pFade->fadeFlags;
 
-	if ( !pFade->duration )
-		return 1;
-
 	// Calc fade speed
 	if ( pFade->fadeFlags & FFADE_OUT )
 	{
@@ -450,6 +447,11 @@ int V_FadeAlpha()
 	{
 		fadeEnd = cl.sf.fadeEnd;
 	}
+
+    // A zero-duration fade-in holds full alpha until the fade expires.
+    if (!(cl.sf.fadeFlags & FFADE_OUT) && cl.sf.fadeSpeed == 0.0f && cl.sf.fadeEnd <= cl.sf.fadeReset) {
+        return cl.sf.fadealpha;
+    }
 
 	fade = ( (double)fadeEnd - cl.time ) * cl.sf.fadeSpeed;
 	if ( cl.sf.fadeFlags & FFADE_OUT )

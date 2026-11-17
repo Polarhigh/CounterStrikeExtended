@@ -362,9 +362,8 @@ void TeamFortressViewport::UpdateScoreBoard()
 		m_pSpectatorGUI->IsVisible() );
 }
 
-bool TeamFortressViewport::CanShowScoreBoard()
-{
-	return m_pClientDllInterface->GetMaxPlayers() > 1;
+bool TeamFortressViewport::CanShowScoreBoard() {
+    return m_pClientDllInterface->GetMaxPlayers() > 0;
 }
 
 void TeamFortressViewport::ShowScoreBoard()
