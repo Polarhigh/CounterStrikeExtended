@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 
 using namespace cse::render;
 
@@ -653,12 +654,156 @@ void AllocationFailure() {
     Check(fresh.Seal(next) == Status::Ok, "construction fault leaves next owner usable");
 }
 
+void QuadExactState() {
+    Recorder recorder;
+    std::array<Vertex, 4> quad{};
+    Check(recorder.SubmitQuad(quad) == Status::Ok, "quad with positive matrix zero");
+    auto matrix = Make(Op::LoadMatrix);
+    matrix.matrix = Matrix4::Identity();
+    matrix.matrix.values[1] = -0.0f;
+    Check(recorder.Submit(matrix) == Status::Ok, "signed-zero matrix change");
+    Check(recorder.SubmitQuad(quad) == Status::Ok, "quad with negative matrix zero");
+    Check(recorder.Draws().size() == 2, "bit-distinct transforms must not merge");
+    Check(std::signbit(recorder.Draws()[1].modelView.values[1]), "negative matrix zero retained");
+    recorder.ClearDraws();
+    auto fog = Make(Op::FogEnd);
+    Check(recorder.Submit(fog) == Status::Ok && recorder.SubmitQuad(quad) == Status::Ok, "positive fog zero");
+    fog.values[0] = -0.0;
+    Check(recorder.Submit(fog) == Status::Ok && recorder.SubmitQuad(quad) == Status::Ok, "negative fog zero");
+    Check(recorder.Draws().size() == 2, "bit-distinct floating raster state must not merge");
+    Check(std::signbit(recorder.Draws()[1].raster.fogEnd), "negative raster zero retained");
+}
+
+void QuadTextureVersions() {
+    FrameRecorder frame;
+    Begin(frame);
+    Send(frame, Binding());
+    Send(frame, Image());
+    std::array<Vertex, 4> quad{};
+    Check(frame.SubmitQuad(quad) == Status::Ok, "texture version quad");
+    auto image = Image();
+    image.upload.bytes[0] = 7;
+    Send(frame, image);
+    Check(frame.SubmitQuad(quad) == Status::Ok, "updated texture version quad");
+    ReadbackEvent readback;
+    readback.requestId = 1;
+    readback.rectangle = {{0, 0, 1, 1}};
+    Check(frame.Readback(readback) == Status::Ok, "readback closes quad batch");
+    Check(frame.SubmitQuad(quad) == Status::Ok, "quad after readback");
+    FrameSnapshot snapshot;
+    Check(frame.Seal(snapshot) == Status::Ok, "seal versioned quad frame");
+    Check(snapshot.draws.size() == 3 && snapshot.events.size() == 4, "texture versions and readback separate packets");
+    const auto first = snapshot.draws[0].resources[0].texture2D;
+    const auto second = snapshot.draws[1].resources[0].texture2D;
+    Check(first != second && first->levels.at(0)->pixels[0] == 255 && second->levels.at(0)->pixels[0] == 7,
+        "queued quads retain immutable texture contents");
+    Check(snapshot.events[2].kind == FrameEventKind::Readback, "readback remains between texture-identical quads");
+}
+
+void QuadBatches() {
+    FrameRecorder frame;
+    Begin(frame);
+    std::array<Vertex, 4> quad{};
+    quad.back().texcoords[0] = {{0.25f, 0.75f, 0, 1}};
+    Check(frame.SubmitQuad(quad) == Status::Ok, "first quad");
+    auto color = Make(Op::Color);
+    color.values = {{0.25, 0.5, 0.75, 0.5, 0, 0}};
+    Send(frame, color);
+    Check(frame.SubmitQuad(quad) == Status::Ok, "second quad");
+    Check(frame.State().Current().texcoords[0] == quad.back().texcoords[0], "batched quad current UV");
+    Check(frame.Clear(DepthClear()) == Status::Ok, "clear breaks quad batch");
+    Check(frame.SubmitQuad(quad) == Status::Ok, "quad after clear");
+    auto scissor = Make(Op::Scissor);
+    scissor.values = {{1, 2, 30, 40, 0, 0}};
+    Send(frame, scissor);
+    Check(frame.SubmitQuad(quad) == Status::Ok, "scissor breaks quad batch");
+    quad[0].position[0] = std::numeric_limits<float>::infinity();
+    Check(frame.SubmitQuad(quad) == Status::Ok, "invalid quad retains independent primitive boundary");
+    FrameSnapshot snapshot;
+    Check(frame.Seal(snapshot) == Status::Ok, "seal quads");
+    Check(snapshot.draws.size() == 3 && snapshot.events.size() == 4, "adjacent compatible quads share one packet");
+    Check(snapshot.draws[0].vertices.size() == 8 && snapshot.draws[2].vertices.size() == 8,
+        "quad boundaries retained inside batches");
+    Check(snapshot.draws[0].vertices[0].color[0] == 1 && snapshot.draws[0].vertices[4].color[0] == 0.25f,
+        "current colors baked per quad without breaking order");
+    Check(snapshot.events[1].kind == FrameEventKind::Clear && snapshot.events[2].drawIndex == 1 &&
+        snapshot.events[3].drawIndex == 2, "clear and scissor preserve event ordering");
+    FrameLimits limits;
+    limits.capture.verticesPerDraw = 4;
+    limits.capture.frameVertices = 8;
+    FrameRecorder bounded(limits);
+    Begin(bounded);
+    Check(bounded.SubmitQuad(quad) == Status::Ok && bounded.SubmitQuad(quad) == Status::Ok,
+        "full batch starts another packet within quotas");
+    Check(bounded.SubmitQuad(quad) == Status::LimitExceeded, "batched vertices retain frame quota");
+}
+
+}
+
+
+void ScalarFrames() {
+    const auto scalar = [](Op op, std::array<double, 6> values = {}, std::uint32_t argument = 0) {
+        ScalarCommand command;
+        command.op = op;
+        command.values = values;
+        command.argument = argument;
+        return command;
+    };
+    const auto triangle = [&scalar](FrameRecorder& recorder) {
+        Check(recorder.SubmitScalar(scalar(Op::Begin)) == Status::Ok, "scalar begin");
+        Check(recorder.SubmitScalar(scalar(Op::Vertex, {{0, 0, 0}})) == Status::Ok, "scalar vertex zero");
+        Check(recorder.SubmitScalar(scalar(Op::Vertex, {{1, 0, 0}})) == Status::Ok, "scalar vertex one");
+        Check(recorder.SubmitScalar(scalar(Op::Vertex, {{0, 1, 0}})) == Status::Ok, "scalar vertex two");
+        Check(recorder.SubmitScalar(scalar(Op::End)) == Status::Ok, "scalar end");
+    };
+    FrameRecorder recorder;
+    Begin(recorder);
+    triangle(recorder);
+    Check(recorder.Readback(Read()) == Status::Ok && recorder.Clear(DepthClear()) == Status::Ok,
+        "scalar draws retain readback/clear boundaries");
+    Check(recorder.BeginList(kPendingList, false) == Status::Ok, "scalar frame compile-only list");
+    triangle(recorder);
+    Check(recorder.EndList() == Status::Ok, "finish scalar frame list");
+    Check(recorder.SubmitScalar(scalar(Op::CallList, {}, kPendingList)) == Status::Ok, "scalar list draw event");
+    FrameSnapshot frame;
+    Check(recorder.Seal(frame) == Status::Ok && frame.draws.size() == 2 && frame.events.size() == 4,
+        "scalar End and CallList emit ordered draw events");
+    Check(frame.events[0].kind == FrameEventKind::Draw && frame.events[0].drawIndex == 0 &&
+        frame.events[1].kind == FrameEventKind::Readback && frame.events[2].kind == FrameEventKind::Clear &&
+        frame.events[3].kind == FrameEventKind::Draw && frame.events[3].drawIndex == 1,
+        "scalar frame event ordering matches consumers");
+    Check(frame.draws[1].vertices[1].position == std::array<float, 4>{{1, 0, 0, 1}},
+        "scalar frame owns list geometry after sealing");
+    Begin(recorder, 2);
+    Check(recorder.SubmitScalar(scalar(Op::TexCoord, {}, kTextureUnits)) == Status::InvalidValue,
+        "invalid scalar poisons frame");
+    Check(recorder.SubmitScalar(scalar(Op::Color, {{0, 1, 0, 1}})) == Status::InvalidValue &&
+        recorder.State().Current().color == std::array<float, 4>{{1, 1, 1, 1}},
+        "later scalar command preserves first error and state");
+    CheckFailedSeal(recorder, Status::InvalidValue);
+    recorder.Abort();
+    Begin(recorder, 3);
+    {
+        ScopedFault fault(CaptureAllocationSite::EventGrowthAfterDraw);
+        Check(recorder.SubmitScalar(scalar(Op::Begin)) == Status::Ok &&
+            recorder.SubmitScalar(scalar(Op::Vertex)) == Status::Ok, "scalar allocation failure setup");
+        Check(recorder.SubmitScalar(scalar(Op::End)) == Status::LimitExceeded && fault.Hits() == 1,
+            "scalar event allocation failure is converted to sticky limit error");
+    }
+    CheckFailedSeal(recorder, Status::LimitExceeded);
+    recorder.Abort();
 }
 
 int main(int argc, char** argv) {
     Check(argc == 2, "one frame case required");
     const std::string name = argv[1];
-    if (name == "order") {
+    if (name == "scalar-commands") {
+        ScalarFrames();
+    } else if (name == "quad-batches") {
+        QuadBatches();
+        QuadTextureVersions();
+        QuadExactState();
+    } else if (name == "order") {
         Order();
     } else if (name == "owned") {
         Owned();

@@ -16,12 +16,13 @@ bool Fail(std::string& error, const char* message) {
 }
 
 template<typename Range> bool Finite(const Range& values) {
+    // A non-short-circuit reduction lets the compiler check array lanes together. Every
+    // component is still classified with isfinite; exceptional primitives use the same filter.
+    bool finite = true;
     for (auto value : values) {
-        if (!std::isfinite(value)) {
-            return false;
-        }
+        finite &= std::isfinite(value);
     }
-    return true;
+    return finite;
 }
 
 bool HasColor(InternalFormat format) {
@@ -60,6 +61,10 @@ bool ConvertImage(const TextureImage& source, const std::shared_ptr<const Shared
     output.height = source.height;
     output.internal = InternalFormat::RGBA8;
     output.defined = true;
+    if (source.internal == InternalFormat::RGBA8 || source.internal == InternalFormat::RGBA) {
+        output.pixels = source.pixels;
+        return true;
+    }
     output.pixels.resize(pixels * kRgbaComponents);
     for (std::size_t index = 0; index < pixels; ++index) {
         auto* destination = output.pixels.data() + index * kRgbaComponents;

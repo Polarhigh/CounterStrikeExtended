@@ -1,4 +1,5 @@
 #include "metal_session.h"
+#include "radar_renderer_gpu.h"
 #include "surface_mesh.h"
 #include <SDL3/SDL.h>
 #include <cstdlib>
@@ -21,6 +22,12 @@ unsigned sceneDrawCalls = 0;
 unsigned sceneIndexedDrawCalls = 0;
 unsigned geometryUploads = 0;
 bool mixedGeometryBufferUsage = false;
+struct SceneBindings {
+    unsigned pipelines = 0;
+    unsigned samplers = 0;
+    unsigned vertexUniforms = 0;
+    unsigned fragmentUniforms = 0;
+} sceneBindings;
 // Narrow link seam around presentation allocation and command retirement. All successful calls use real SDL.
 struct PresentationProbe {
     bool active = false;
@@ -29,6 +36,7 @@ struct PresentationProbe {
     unsigned acquisitions = 0;
     unsigned cancellations = 0;
     unsigned submissions = 0;
+    unsigned blits = 0;
 } presentationProbe;
 
 template<typename Function> Function Original(const char* name) {
@@ -39,6 +47,29 @@ template<typename Function> Function Original(const char* name) {
     }
     return function;
 }
+}
+
+extern "C" void SDL_BindGPUGraphicsPipeline(SDL_GPURenderPass* pass, SDL_GPUGraphicsPipeline* pipeline) {
+    ++sceneBindings.pipelines;
+    Original<decltype(&SDL_BindGPUGraphicsPipeline)>("SDL_BindGPUGraphicsPipeline")(pass, pipeline);
+}
+
+extern "C" void SDL_BindGPUFragmentSamplers(SDL_GPURenderPass* pass, Uint32 slot,
+    const SDL_GPUTextureSamplerBinding* bindings, Uint32 count) {
+    ++sceneBindings.samplers;
+    Original<decltype(&SDL_BindGPUFragmentSamplers)>("SDL_BindGPUFragmentSamplers")(pass, slot, bindings, count);
+}
+
+extern "C" void SDL_PushGPUVertexUniformData(SDL_GPUCommandBuffer* command, Uint32 slot,
+    const void* data, Uint32 bytes) {
+    ++sceneBindings.vertexUniforms;
+    Original<decltype(&SDL_PushGPUVertexUniformData)>("SDL_PushGPUVertexUniformData")(command, slot, data, bytes);
+}
+
+extern "C" void SDL_PushGPUFragmentUniformData(SDL_GPUCommandBuffer* command, Uint32 slot,
+    const void* data, Uint32 bytes) {
+    ++sceneBindings.fragmentUniforms;
+    Original<decltype(&SDL_PushGPUFragmentUniformData)>("SDL_PushGPUFragmentUniformData")(command, slot, data, bytes);
 }
 
 extern "C" void SDL_DrawGPUPrimitives(SDL_GPURenderPass* pass, Uint32 vertices, Uint32 instances,
@@ -95,6 +126,13 @@ extern "C" bool SDL_CancelGPUCommandBuffer(SDL_GPUCommandBuffer* command) {
         ++presentationProbe.cancellations;
     }
     return Original<decltype(&SDL_CancelGPUCommandBuffer)>("SDL_CancelGPUCommandBuffer")(command);
+}
+
+extern "C" void SDL_BlitGPUTexture(SDL_GPUCommandBuffer* command, const SDL_GPUBlitInfo* info) {
+    if (presentationProbe.active) {
+        ++presentationProbe.blits;
+    }
+    Original<decltype(&SDL_BlitGPUTexture)>("SDL_BlitGPUTexture")(command, info);
 }
 
 extern "C" bool SDL_SubmitGPUCommandBuffer(SDL_GPUCommandBuffer* command) {
@@ -158,8 +196,11 @@ void ConsecutiveDraws(MetalSession& session, std::string& error) {
         vertex.color[3] = 0.25f;
     }
     sceneDrawCalls = 0;
+    sceneBindings = {};
     CHECK(session.Render(frame, error));
     CHECK(sceneDrawCalls == 2);
+    CHECK(sceneBindings.pipelines == 1 && sceneBindings.samplers == 1);
+    CHECK(sceneBindings.vertexUniforms == 1 && sceneBindings.fragmentUniforms == 2);
     CHECK(session.ReadPixels(kHalfSize, kHalfSize, 1, 1, 4, 1, pixel.data(), error));
     CHECK(pixel[0] == kOpaqueChannel && pixel[1] == 0);
     // Projection and dynamic scissor state are independent of the pipeline cache key too.
@@ -195,8 +236,11 @@ void ConsecutiveDraws(MetalSession& session, std::string& error) {
         frame.draws[index].resources[0].texture2D = object;
     }
     sceneDrawCalls = 0;
+    sceneBindings = {};
     CHECK(session.Render(frame, error));
     CHECK(sceneDrawCalls == 2);
+    CHECK(sceneBindings.pipelines == 1 && sceneBindings.samplers == 2);
+    CHECK(sceneBindings.vertexUniforms == 1 && sceneBindings.fragmentUniforms == 1);
     CHECK(session.ReadPixels(kHalfSize, kHalfSize, 1, 1, 4, 1, pixel.data(), error));
     CHECK(pixel[0] == 0 && pixel[1] == kOpaqueChannel);
     // Merging translucent primitives must retain their original compositing order.
@@ -276,6 +320,94 @@ void NonfiniteGeometry(MetalSession& session, std::string& error) {
     CHECK(session.Render(frame, error));
     CHECK(session.ReadPixels(0, 0, kTargetSize, kTargetSize, 4, 1, actual.data(), error));
     CHECK(actual == expected);
+}
+
+void PreparationReuse(MetalSession& session, std::string& error) {
+    FrameSnapshot frame;
+    frame.info.width = kTargetSize;
+    frame.info.height = kTargetSize;
+    frame.draws = {Solid(1, 0, 0)};
+    frame.events.resize(1);
+    session.EnableDiagnostics(true);
+    CHECK(session.Render(frame, error));
+    const auto allocations = session.Diagnostics().preparationAllocations;
+    for (unsigned index = 0; index < 8; ++index) {
+        CHECK(session.Render(frame, error));
+    }
+    CHECK(session.Diagnostics().preparationAllocations == allocations);
+    CHECK(session.Finish(error));
+    session.EnableDiagnostics(false);
+}
+
+void BatchedUiPixels(MetalSession& session, std::string& error) {
+    for (unsigned samples : {1u, 4u}) {
+        CHECK(session.Resize(kTargetSize, kTargetSize, samples, error));
+        for (auto shade : {Shade::Flat, Shade::Smooth}) {
+            for (auto polygon : {PolygonMode::Fill, PolygonMode::Line}) {
+                std::vector<unsigned char> expected(kTargetSize * kTargetSize * 4);
+                std::vector<unsigned char> actual(expected.size());
+                for (bool batch : {false, true}) {
+                    Recorder recorder;
+                    const auto send = [&recorder, &error](Op operation, std::uint32_t argument,
+                        std::array<double, 6> values) {
+                        Command command;
+                        command.op = operation;
+                        command.argument = argument;
+                        command.values = values;
+                        CHECK(recorder.Submit(command) == Status::Ok);
+                    };
+                    send(Op::Viewport, 0, {{0, 0, kTargetSize, kTargetSize, 0, 0}});
+                    send(Op::ShadeModel, static_cast<unsigned>(shade), {});
+                    Command mode;
+                    mode.op = Op::PolygonMode;
+                    mode.argument = static_cast<unsigned>(Cull::FrontAndBack);
+                    mode.second = static_cast<unsigned>(polygon);
+                    CHECK(recorder.Submit(mode) == Status::Ok);
+                    send(Op::Enable, static_cast<unsigned>(Capability::Blend), {{1, 0, 0, 0, 0, 0}});
+                    Command blend;
+                    blend.op = Op::BlendFunction;
+                    blend.argument = static_cast<unsigned>(BlendFactor::SourceAlpha);
+                    blend.second = static_cast<unsigned>(BlendFactor::InverseSourceAlpha);
+                    CHECK(recorder.Submit(blend) == Status::Ok);
+                    for (unsigned index = 0; index < 3; ++index) {
+                        const auto source = Solid(1, 1, 1);
+                        std::array<Vertex, 4> quad;
+                        std::copy(source.vertices.begin(), source.vertices.end(), quad.begin());
+                        for (auto& vertex : quad) {
+                            vertex.position[0] = vertex.position[0] * 0.75f + (index == 0 ? -0.25f : 0.25f);
+                        }
+                        if (index == 1) {
+                            quad[0].position[0] = std::numeric_limits<float>::infinity();
+                        }
+                        send(Op::Color, 0, {{index == 0 ? 1.0 : 0.0, 0, index == 2 ? 1.0 : 0.0, 0.5, 0, 0}});
+                        CHECK(recorder.SubmitQuad(quad) == Status::Ok);
+                        if (!batch) {
+                            recorder.EndQuadBatch();
+                        }
+                    }
+                    FrameSnapshot frame;
+                    frame.info.width = kTargetSize;
+                    frame.info.height = kTargetSize;
+                    CHECK(recorder.TakeFrameDraws(frame.draws) == Status::Ok);
+                    CHECK(frame.draws.size() == (batch ? 1u : 3u));
+                    FrameEvent clear;
+                    clear.kind = FrameEventKind::Clear;
+                    clear.clear.mask = kClearColor | kClearDepth;
+                    frame.events.push_back(clear);
+                    for (std::size_t index = 0; index < frame.draws.size(); ++index) {
+                        FrameEvent event;
+                        event.drawIndex = index;
+                        frame.events.push_back(event);
+                    }
+                    CHECK(session.Render(frame, error));
+                    CHECK(session.ReadPixels(0, 0, kTargetSize, kTargetSize, 4, 1,
+                        batch ? actual.data() : expected.data(), error));
+                }
+                CHECK(actual == expected);
+            }
+        }
+    }
+    CHECK(session.Resize(kTargetSize, kTargetSize, 1, error));
 }
 
 void PersistentMesh(MetalSession& session, std::string& error) {
@@ -556,6 +688,14 @@ void IndexedDraws(MetalSession& session, std::string& error) {
     }
 }
 
+extern "C" SDL_GPUFence* SDL_SubmitGPUCommandBufferAndAcquireFence(SDL_GPUCommandBuffer* command) {
+    if (presentationProbe.active) {
+        ++presentationProbe.submissions;
+    }
+    return Original<decltype(&SDL_SubmitGPUCommandBufferAndAcquireFence)>(
+        "SDL_SubmitGPUCommandBufferAndAcquireFence")(command);
+}
+
 int main() {
     std::string error;
     CHECK(SDL_Init(SDL_INIT_VIDEO));
@@ -566,9 +706,11 @@ int main() {
     MetalSession session;
     CHECK(session.Initialize(nullptr, true, error));
     CHECK(session.Resize(16, 16, 1, error));
+    PreparationReuse(session, error);
     ConsecutiveDraws(session, error);
     IndexedDraws(session, error);
     NonfiniteGeometry(session, error);
+    BatchedUiPixels(session, error);
     PersistentMesh(session, error);
     FrameSnapshot frame;
     frame.info.width = 16;
@@ -1060,6 +1202,47 @@ int main() {
     presentationProbe.active = false;
     CHECK(session.Present(true, true, error));
     CHECK(session.Finish(error));
+    session.Shutdown();
+    CHECK(SDL_SetWindowSize(window, kTargetSize, kTargetSize));
+    CHECK(SDL_SyncWindow(window));
+    SDL_PumpEvents();
+    CHECK(session.Initialize(window, true, error));
+    CHECK(session.Resize(kTargetSize, kTargetSize, 4, error));
+    const auto center = kTargetSize / 2;
+    frame.draws[0] = Solid(1, 0, 0);
+    CHECK(session.Render(frame, error));
+    presentationProbe = {};
+    presentationProbe.active = true;
+    CHECK(session.Present(true, true, error));
+    CHECK(presentationProbe.acquisitions == 1 && presentationProbe.blits == 1);
+    presentationProbe.active = false;
+    // Reading the next resolved scene must preserve the last presented pixels.
+    frame.draws[0] = Solid(0, 1, 0);
+    CHECK(session.Render(frame, error));
+    // The backdrop must sample the new resolve, even when it requests the resolve itself.
+    constexpr std::uint64_t kBackdropEpoch = 1;
+    CseRadarBackdropDraw backdrop{};
+    backdrop.size = sizeof(backdrop);
+    backdrop.rendererEpoch = kBackdropEpoch;
+    backdrop.hud = {kTargetSize, kTargetSize};
+    backdrop.extent = kTargetSize;
+    backdrop.shape = CSE_RADAR_SHAPE_SQUARE;
+    backdrop.darken = 1;
+    backdrop.opacity = 1;
+    CHECK(session.RadarEffects(kBackdropEpoch).DrawRadarBackdrop(backdrop, frame.draws[0].raster) == CSE_RADAR_OK);
+    CHECK(session.ReadPixels(center, center, 1, 1, 4, 1, rgba.data(), error));
+    CHECK(rgba[0] == 0 && rgba[1] == 255);
+    CHECK(session.ReadPresentedPixels(center, center, 1, 1, 4, 1, rgba.data(), error));
+    CHECK(rgba[0] == 255 && rgba[1] == 0);
+    CHECK(session.Present(true, true, error));
+    // Reusing the original resolve target must preserve the most recent presentation.
+    frame.draws[0] = Solid(0, 0, 1);
+    CHECK(session.Render(frame, error));
+    CHECK(session.ReadPixels(center, center, 1, 1, 4, 1, rgba.data(), error));
+    CHECK(rgba[1] == 0 && rgba[2] == 255);
+    CHECK(session.Resize(kTargetSize * 2, kTargetSize, 4, error));
+    CHECK(session.ReadPresentedPixels(center, center, 1, 1, 4, 1, rgba.data(), error));
+    CHECK(rgba[0] == 0 && rgba[1] == 255 && rgba[2] == 0);
     session.Shutdown();
     session.Shutdown();
     SDL_DestroyWindow(window);
