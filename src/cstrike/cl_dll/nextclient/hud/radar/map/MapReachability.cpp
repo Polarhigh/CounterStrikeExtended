@@ -493,7 +493,7 @@ bool ReadOrigin(std::string_view text, ncl_math::Vector3& origin) {
 }
 } // namespace
 
-bool MapReachability_ReadEntryPoints(std::string_view entities, float crouch_min_z,
+bool MapReachability_ReadEntryPoints(std::string_view entity_text, float crouch_min_z,
                                      std::vector<ncl_math::Vector3>& out) {
     out.clear();
     std::vector<EntryEntity> entries;
@@ -501,15 +501,15 @@ bool MapReachability_ReadEntryPoints(std::string_view entities, float crouch_min
     size_t cursor = 0;
     std::string_view token;
     bool malformed = false;
-    while (ReadToken(entities, cursor, token, malformed)) {
+    while (ReadToken(entity_text, cursor, token, malformed)) {
         if (token != "{") {
             return false;
         }
         EntryEntity entity;
         std::string_view target;
-        while (ReadToken(entities, cursor, token, malformed) && token != "}") {
+        while (ReadToken(entity_text, cursor, token, malformed) && token != "}") {
             std::string_view key = token;
-            if (!ReadToken(entities, cursor, token, malformed) || token == "{" || token == "}") {
+            if (!ReadToken(entity_text, cursor, token, malformed) || token == "{" || token == "}") {
                 return false;
             }
             if (key == "classname") {

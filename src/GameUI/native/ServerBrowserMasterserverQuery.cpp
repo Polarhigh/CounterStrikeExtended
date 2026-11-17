@@ -10,9 +10,18 @@
 #include <mutex>
 #include <set>
 #include <thread>
+#include <vector>
 #if defined(_WIN32)
 #include <winsock2.h>
+#if defined(_MSC_VER)
+// The SDK's inline socket option helpers leave _Out_ values unset on error (C6101).
+#pragma warning(push)
+#pragma warning(disable : 6101)
+#endif
 #include <ws2tcpip.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -80,6 +89,7 @@ struct Directory {
             connect(socket.handle, address, static_cast<int>(addressSize)) != 0) {
             return false;
         }
+        std::vector<unsigned char> bytes(UINT16_MAX);
         std::string cursor = "0.0.0.0:0";
         std::set<std::string> cursors;
         for (size_t page = 0; page < MaximumDirectoryPages && !stop; ++page) {
@@ -114,7 +124,6 @@ struct Directory {
                     if (!ready) {
                         continue;
                     }
-                    std::array<unsigned char, UINT16_MAX> bytes{};
                     const auto size = recv(socket.handle, reinterpret_cast<char*>(bytes.data()),
                         static_cast<int>(bytes.size()), 0);
                     if (size < 0) {
@@ -399,7 +408,7 @@ void MasterserverQueryProvider::Pump(size_t budget) {
         {
             std::lock_guard<std::mutex> lock(request->directory.mutex);
             // Reserve work for metadata starts; a large directory must not starve idle ping slots.
-            const size_t discoveryBudget = request->queued.empty() ? std::max(size_t{1}, budget / 2) : 0;
+            const size_t discoveryBudget = request->queued.empty() ? (std::max)(size_t{1}, budget / 2) : 0;
             while (!request->directory.pending.empty() && work < discoveryBudget && work < budget) {
                 ++work;
                 const auto address = request->directory.pending.front();

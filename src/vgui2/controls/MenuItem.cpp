@@ -376,7 +376,7 @@ void MenuItem::Paint() {
     const Color oldColor = text->GetColor();
     const int tall = surface()->GetFontTall(GetFont());
     text->SetPos(textX, (GetTall() - tall) / 2);
-    text->SetSize((std::max)(0, GetWide() - textX - smoked::Pixels(m_pCascadeMenu ? 30 : 16)), tall);
+    text->SetSize((std::max)(0, GetWide() - textX - smoked::Pixels(m_pCascadeMenu ? 30.0f : 16.0f)), tall);
     text->SetColor(foreground);
     text->Paint();
     text->SetColor(oldColor);
@@ -402,7 +402,7 @@ void MenuItem::PaintBackground() {
         return;
     }
     if (!smoked::MenuSeparator(this) && IsEnabled() && IsArmed()) {
-        smoked::Fill(0, 0, GetWide(), GetTall(), smoked::Pixels(4), smoked::ColorOf(cse::ui::Selection));
+        smoked::Fill(0, 0, GetWide(), GetTall(), static_cast<float>(smoked::Pixels(4)), smoked::ColorOf(cse::ui::Selection));
     }
 }
 

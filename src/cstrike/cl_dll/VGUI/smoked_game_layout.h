@@ -16,8 +16,8 @@ inline void Center(vgui2::Panel* panel, int referenceWidth, int referenceHeight)
     int screenHeight = 0;
     vgui2::surface()->GetScreenSize(screenWidth, screenHeight);
     const int margin = vgui2::smoked::Pixels(cse::ui::WindowInset);
-    const int width = (std::min)(vgui2::smoked::Pixels(referenceWidth), screenWidth - margin * 2);
-    const int height = (std::min)(vgui2::smoked::Pixels(referenceHeight), screenHeight - margin * 2);
+    const int width = (std::min)(vgui2::smoked::Pixels(static_cast<float>(referenceWidth)), screenWidth - margin * 2);
+    const int height = (std::min)(vgui2::smoked::Pixels(static_cast<float>(referenceHeight)), screenHeight - margin * 2);
     panel->SetBounds((screenWidth - width) / 2, (screenHeight - height) / 2, width, height);
 }
 

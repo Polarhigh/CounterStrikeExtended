@@ -72,17 +72,17 @@ Menu* CCreateCommandComboMenu::CreateCommandMenu( char* menuFile, int playerTeam
 
     int fileBytes = 0;
     void* loaded = gViewPortInterface->GetClientDllInterface()->COM_LoadFile(menuFile, 5, &fileBytes);
-    std::string text;
+    std::string menuText;
     const bool decoded = loaded && fileBytes >= 0
-        && cse::resource_text::Decode(loaded, static_cast<std::size_t>(fileBytes), text);
+        && cse::resource_text::Decode(loaded, static_cast<std::size_t>(fileBytes), menuText);
     if (loaded) {
         gViewPortInterface->GetClientDllInterface()->COM_FreeFile(loaded);
     }
-    if (!decoded || text.empty()) {
+    if (!decoded || menuText.empty()) {
         delete root;
         return NULL;
     }
-    char* file = &text[0];
+    char* file = &menuText[0];
 
 	char lastButtonText[32] = "file start";
 	char token[1024];

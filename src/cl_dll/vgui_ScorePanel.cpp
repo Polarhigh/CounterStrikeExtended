@@ -1136,11 +1136,11 @@ void CLabelHeader::calcAlignment(int iwide, int itall, int &x, int &y)
 void ScorePanel::RefreshLanguage() {
     auto* schemes = gViewPort->GetSchemeManager();
     Font* title = schemes->getFont(schemes->getSchemeHandle("Scoreboard Title Text"));
-    Font* small = schemes->getFont(schemes->getSchemeHandle("Scoreboard Small Text"));
+    Font* smallFont = schemes->getFont(schemes->getSchemeHandle("Scoreboard Small Text"));
     m_TitleLabel.setFont(title);
     m_pCloseButton->setFont(title);
     for (int column = 0; column < NUM_COLUMNS; ++column) {
-        m_HeaderLabels[column].setFont(small);
+        m_HeaderLabels[column].setFont(smallFont);
         const char* source = g_ColumnInfo[column].m_pTitle;
         if (source) {
             const std::string text = source[0] == '#' ? LocalizeUi(source, source) : source;

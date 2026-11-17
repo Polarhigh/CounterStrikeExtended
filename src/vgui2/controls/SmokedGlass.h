@@ -11,6 +11,11 @@
 #include "../../public/vgui_background_controls.h"
 #include "../../public/vgui_smoked_glass.h"
 
+#pragma push_macro("GetClassName")
+#pragma push_macro("CreateFont")
+#undef GetClassName
+#undef CreateFont
+
 namespace vgui2 {
 ISurface* surface();
 IPanel* ipanel();
@@ -134,14 +139,14 @@ inline HFont TextFont(Panel* panel, IScheme* scheme, HFont candidate, bool title
         return original;
     }
     bool ordinary = title;
-    bool small = false;
+    bool smallText = false;
     bool bold = false;
     constexpr const char* TextAliases[]{"Default", "DefaultSmall", "DefaultVerySmall", "DefaultLarge",
         "DefaultBold", "DefaultSmallBold", "MenuLarge", "MenuItemFont", "LabelFont"};
     for (const char* alias : TextAliases) {
         if (original && original == scheme->GetFontEx(alias, panel->IsProportional(), panel->IsHDProportional())) {
             ordinary = true;
-            small = std::strstr(alias, "Small") != nullptr;
+            smallText = std::strstr(alias, "Small") != nullptr;
             bold = std::strstr(alias, "Bold") != nullptr;
             break;
         }
@@ -159,8 +164,8 @@ inline HFont TextFont(Panel* panel, IScheme* scheme, HFont candidate, bool title
     constexpr int EmphasisWeight = 600;
     constexpr int FontAntialias = 0x010; // ISurface026's antialiased glyph flag.
     const bool formText = ReadableFormText(panel);
-    const int minimumHeight = title ? minimumTitleHeight : (small ? minimumSmallHeight : minimumBodyHeight);
-    int tall = (std::max)(minimumHeight, Pixels(title ? 24.0f : (formText ? 20.0f : (small ? 14.0f : 16.0f))));
+    const int minimumHeight = title ? minimumTitleHeight : (smallText ? minimumSmallHeight : minimumBodyHeight);
+    int tall = (std::max)(minimumHeight, Pixels(title ? 24.0f : (formText ? 20.0f : (smallText ? 14.0f : 16.0f))));
     if (!title) {
         if (!formText) {
             tall = (std::min)(tall, (std::max)(minimumSmallHeight, surface()->GetFontTall(original)));
@@ -582,3 +587,6 @@ inline bool Border(Panel* panel, PanelMessageMap* map) {
 
 } // namespace smoked
 } // namespace vgui2
+
+#pragma pop_macro("CreateFont")
+#pragma pop_macro("GetClassName")

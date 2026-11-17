@@ -194,8 +194,8 @@ inline const char* Check(const void* data, int fileBytes, bool blueShift) {
         counts[LUMP_CLIPNODES] > MaximumSignedChildren || leafs > MaximumSignedChildren) {
         return "invalid model or graph count";
     }
-    const lump_t& entities = lumps[LUMP_ENTITIES];
-    if (entities.filelen && !std::memchr(base + entities.fileofs, 0, entities.filelen)) {
+    const lump_t& entityLump = lumps[LUMP_ENTITIES];
+    if (entityLump.filelen && !std::memchr(base + entityLump.fileofs, 0, entityLump.filelen)) {
         return "unterminated entities";
     }
     int textures = 0;

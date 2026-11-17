@@ -10,6 +10,8 @@
 #include "NativeSdk.h"
 #include "radar_engine_api.h"
 
+#undef CreateFont
+
 namespace {
 constexpr int kFontWeight = 500;
 constexpr int kMinimumFontPixels = 8;

@@ -4,7 +4,15 @@
 #include <cstring>
 
 #if defined(_WIN32)
+#if defined(_MSC_VER)
+// The Windows SDK applies _In_opt_ to the integer RegOpenKeyExA options parameter (C6553).
+#pragma warning(push)
+#pragma warning(disable : 6553)
+#endif
 #include <windows.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #elif defined(__APPLE__)
 #include "mac_settings_store.h"
 #endif

@@ -30,7 +30,7 @@ void DumpLayers() {
 
     while (start < dump.size()) {
         std::string chunk = dump.substr(start, kConsoleChunkSize);
-        gEngfuncs.Con_Printf("%s", chunk.c_str());
+        gEngfuncs.Con_Printf(const_cast<char*>("%s"), chunk.c_str());
         start += chunk.size();
     }
 }
@@ -38,11 +38,11 @@ void DumpLayers() {
 } // namespace
 
 void RadarDebug_Init() {
-    g_Enabled = gEngfuncs.pfnRegisterVariable("hud_radar_debug", "0", 0);
+    g_Enabled = gEngfuncs.pfnRegisterVariable(const_cast<char*>("hud_radar_debug"), const_cast<char*>("0"), 0);
 
     if (!g_LayersCommandRegistered) {
-        gEngfuncs.pfnAddCommand("radar_layers_dump", DumpLayers);
-        gEngfuncs.pfnAddCommand("radar_markers_dump", DumpMarkers);
+        gEngfuncs.pfnAddCommand(const_cast<char*>("radar_layers_dump"), DumpLayers);
+        gEngfuncs.pfnAddCommand(const_cast<char*>("radar_markers_dump"), DumpMarkers);
         g_LayersCommandRegistered = true;
     }
 }

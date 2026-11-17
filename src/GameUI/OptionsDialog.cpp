@@ -153,7 +153,7 @@ int COptionsDialog::StyledHeight() {
     constexpr int ScreenMargin = 4;
     constexpr int DefaultStyledHeight = 640;
     const int desired = vgui2::smoked::Pixels(DefaultStyledHeight);
-    return std::min(desired, workspaceTall - 2 * GetProportionalScaledValue(ScreenMargin));
+    return (std::min)(desired, workspaceTall - 2 * GetProportionalScaledValue(ScreenMargin));
 }
 
 void COptionsDialog::PerformLayout() {
@@ -196,11 +196,11 @@ void COptionsDialog::PerformLayout() {
     // Wrapped tabs never determine owner geometry, including when the active page changes.
     constexpr int DefaultStyledWidth = 760;
     const int requiredWidth = smoked ? vgui2::smoked::Pixels(DefaultStyledWidth)
-        : std::max(GetProportionalScaledValue(DefaultWidth), tabsWidth + frameInset);
+        : (std::max)(GetProportionalScaledValue(DefaultWidth), tabsWidth + frameInset);
     const int screenMargin = smoked ? vgui2::smoked::Pixels(StyledScreenMargin)
         : GetProportionalScaledValue(OriginalScreenMargin);
-    const int availableWidth = std::max(1, workspaceWidth - 2 * screenMargin);
-    const int width = std::min(requiredWidth, availableWidth);
+    const int availableWidth = (std::max)(1, workspaceWidth - 2 * screenMargin);
+    const int width = (std::min)(requiredWidth, availableWidth);
     if (width != GetWide()) {
         SetWide(width);
         vgui2::PropertyDialog::PerformLayout();
@@ -233,7 +233,7 @@ void COptionsDialog::PerformLayout() {
         int contentWidth = 0;
         int contentHeight = 0;
         button->GetContentSize(contentWidth, contentHeight);
-        const int buttonWidth = std::max(GetProportionalScaledValue(MinimumButtonWidth),
+        const int buttonWidth = (std::max)(GetProportionalScaledValue(MinimumButtonWidth),
             contentWidth + GetProportionalScaledValue(ButtonPadding));
         int buttonX = 0;
         int buttonY = 0;

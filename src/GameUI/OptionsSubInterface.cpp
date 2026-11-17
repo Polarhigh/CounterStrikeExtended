@@ -83,7 +83,7 @@ int LayoutNotice(vgui2::Label* label, int inset, int top, int width, int minimum
     // GetContentSize initializes the label font; measure wrapped text rather than the previous image height.
     label->GetContentSize(contentWidth, contentHeight);
     label->GetTextImage()->GetContentSize(contentWidth, contentHeight);
-    const int height = std::max(minimumHeight, contentHeight);
+    const int height = (std::max)(minimumHeight, contentHeight);
     label->SetTall(height);
     return height;
 }
@@ -257,14 +257,14 @@ void COptionsSubInterface::PerformLayout() {
         using vgui2::smoked::Pixels;
         const int inset = Pixels(12);
         const int gap = Pixels(12);
-        const int width = std::max(0, GetWide() - inset - inset);
+        const int width = (std::max)(0, GetWide() - inset - inset);
         const int rowHeight = Pixels(32);
         int contentWidth = 0;
         int contentHeight = 0;
         m_uiStyleLabel->GetContentSize(contentWidth, contentHeight);
-        const int labelWidth = std::min(width * 2 / 5, std::max(width / 3, contentWidth + gap));
+        const int labelWidth = (std::min)(width * 2 / 5, (std::max)(width / 3, contentWidth + gap));
         const int fieldX = inset + labelWidth + gap;
-        const int fieldWidth = std::max(0, width - labelWidth - gap);
+        const int fieldWidth = (std::max)(0, width - labelWidth - gap);
         int top = inset;
         m_languageLabel->SetBounds(inset, top, labelWidth, rowHeight);
         m_languageCombo->SetBounds(fieldX, top, fieldWidth, rowHeight);
@@ -286,7 +286,7 @@ void COptionsSubInterface::PerformLayout() {
         m_originalStyle->GetText(originalText, 256);
         vgui2::surface()->GetTextSize(m_originalStyle->GetFont(), originalText, contentWidth, contentHeight);
         contentWidth += Pixels(cse::ui::RadioDiameter + cse::ui::RadioTextGap);
-        const int originalWidth = std::min(fieldWidth, contentWidth + gap);
+        const int originalWidth = (std::min)(fieldWidth, contentWidth + gap);
         m_originalStyle->SetBounds(fieldX, top, originalWidth, rowHeight);
         m_smokedStyle->GetContentSize(contentWidth, contentHeight);
         m_smokedStyle->SetFont(vgui2::smoked::TextFont(m_smokedStyle,
@@ -298,13 +298,13 @@ void COptionsSubInterface::PerformLayout() {
         const bool stacked = originalWidth + gap + contentWidth > fieldWidth;
         m_smokedStyle->SetBounds(stacked ? fieldX : fieldX + originalWidth + gap,
             stacked ? top + rowHeight : top,
-            stacked ? fieldWidth : std::max(0, fieldWidth - originalWidth - gap), rowHeight);
+            stacked ? fieldWidth : (std::max)(0, fieldWidth - originalWidth - gap), rowHeight);
         const int radarTop = top + (stacked ? rowHeight * 2 : rowHeight) + gap;
         m_radarSettings->SetBounds(fieldX, radarTop, fieldWidth, rowHeight);
         return;
     }
     const int inset = GetProportionalScaledValue(ContentInset);
-    const int width = std::max(0, GetWide() - inset - inset);
+    const int width = (std::max)(0, GetWide() - inset - inset);
     const int labelHeight = GetProportionalScaledValue(LanguageLabelHeight);
     const int comboHeight = GetProportionalScaledValue(LanguageComboHeight);
     const int controlGap = GetProportionalScaledValue(ControlGap);

@@ -968,7 +968,7 @@ void Menu::PerformLayout()
 			item->SetTextInset( m_iCheckImageWidth, 0 );
 		}
         if (cse::ui::ControlsSmokedGlass()) {
-            item->SetTextInset(smoked::Pixels(item->IsCheckable() ? 40 : 22), 0);
+            item->SetTextInset(smoked::Pixels(item->IsCheckable() ? 40.0f : 22.0f), 0);
         }
 	}
 

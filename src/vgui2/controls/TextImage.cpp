@@ -469,9 +469,12 @@ void TextImage::Paint()
 //-----------------------------------------------------------------------------
 void TextImage::GetUnlocalizedText( char* buffer, int bufferSize )
 {
+    if (!buffer || bufferSize <= 0) {
+        return;
+    }
     cse::localization::RefreshText(this);
     const auto& source = cse::localization::Binding(this).token;
-    if (!source.empty() && buffer && bufferSize > 0) {
+    if (!source.empty()) {
         std::strncpy(buffer, source.c_str(), static_cast<std::size_t>(bufferSize));
         buffer[bufferSize - 1] = '\0';
         return;

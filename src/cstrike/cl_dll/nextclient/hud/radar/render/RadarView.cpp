@@ -174,9 +174,9 @@ RadarTransform RadarView_ComputeTransform(const RadarBox& box, const RadarViewPa
     }
 
     if (!fullmap && p.map_shift && p.map_bounds) {
-        ncl_math::Vector2 center = ClampFollowCenter(box, p, t);
-        t.tile_origin = t.tile_origin - t.projection.ApplyVector((center - t.world_center) * t.k);
-        t.world_center = center;
+        ncl_math::Vector2 clamped_center = ClampFollowCenter(box, p, t);
+        t.tile_origin = t.tile_origin - t.projection.ApplyVector((clamped_center - t.world_center) * t.k);
+        t.world_center = clamped_center;
     }
 
     return t;

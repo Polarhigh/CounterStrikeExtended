@@ -141,7 +141,7 @@ ncl_math::Vector3 MarkerFeed::Interpolate(int index, ncl_math::Vector3 pos, std:
     return motion->shown;
 }
 
-void MarkerFeed::Update(std::span<const MarkerIdentity::Entity> entities,
+void MarkerFeed::Update(std::span<const MarkerIdentity::Entity> snapshot,
                         std::span<const MarkerIdentity::Observation> observations, float time) {
     if (time < last_time_) {
         ResetMotion();
@@ -149,12 +149,12 @@ void MarkerFeed::Update(std::span<const MarkerIdentity::Entity> entities,
     last_time_ = time;
 
     if (!params_.index_is_entity) {
-        identity_.Update(entities, observations);
+        identity_.Update(snapshot, observations);
     }
 
     marker_count_ = 0;
 
-    for (const MarkerIdentity::Entity& entity : entities) {
+    for (const MarkerIdentity::Entity& entity : snapshot) {
         if (marker_count_ >= (int)markers_.size()) {
             break;
         }
@@ -175,9 +175,9 @@ void MarkerFeed::Update(std::span<const MarkerIdentity::Entity> entities,
     for (const MarkerIdentity::Observation& observation : observations) {
         int ent = get_entity(observation.index);
         auto carrier = std::ranges::find_if(
-            entities, [ent](const MarkerIdentity::Entity& entity) { return ent >= 0 && entity.ent == ent; });
+            snapshot, [ent](const MarkerIdentity::Entity& entity) { return ent >= 0 && entity.ent == ent; });
 
-        if (carrier != entities.end()) {
+        if (carrier != snapshot.end()) {
             continue;
         }
 

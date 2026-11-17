@@ -47,8 +47,8 @@ inline const EngineApi* ControlsEngine() {
 }
 inline std::uint64_t ControlsRevision() {
     const auto* runtime = ControlsServices().runtime;
-    const auto* engine = ControlsServices().engine;
-    return runtime ? runtime->Revision() : (engine ? engine->Revision() : 0);
+    const auto* api = ControlsServices().engine;
+    return runtime ? runtime->Revision() : (api ? api->Revision() : 0);
 }
 struct DeleteVariables {
     void operator()(KeyValues* variables) const {
@@ -120,7 +120,7 @@ inline std::wstring WideLiteral(const char* text) {
     text = text ? text : "";
     const std::size_t length = std::strlen(text);
     constexpr std::size_t MaximumLiteralCells = 32767;
-    const std::size_t cells = std::min(length + 1, MaximumLiteralCells);
+    const std::size_t cells = (std::min)(length + 1, MaximumLiteralCells);
     std::vector<wchar_t> converted(cells, L'\0');
     vgui2::localize()->ConvertANSIToUnicode(text, converted.data(), static_cast<int>(cells * sizeof(wchar_t)));
     return converted.data();

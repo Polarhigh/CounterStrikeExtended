@@ -1362,10 +1362,10 @@ void Frame::PerformLayout()
             int contentHeight = 0;
             GetClientArea(contentX, contentY, contentWidth, contentHeight);
             const int controlHeight = smoked::Pixels(cse::ui::ControlHeight);
-            const int gap = smoked::Pixels(12);
+            const int messageGap = smoked::Pixels(12);
             if (Panel* message = FindChildByName("Message", false)) {
                 message->SetBounds(contentX, contentY, contentWidth,
-                    (std::max)(0, contentHeight - controlHeight - gap));
+                    (std::max)(0, contentHeight - controlHeight - messageGap));
             }
             for (int index = 0; index < GetChildCount(); ++index) {
                 auto* action = dynamic_cast<Button*>(GetChild(index));

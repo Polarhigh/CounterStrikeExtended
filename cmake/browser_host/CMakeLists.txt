@@ -108,6 +108,12 @@ if(MSVC)
   # MSVC places an incremental-link database beside the DLL even when PDB/import
   # paths are isolated. Runtime directories contain only staged runtime files.
   target_link_options(${CEF_TARGET} PRIVATE /INCREMENTAL:NO)
+  target_compile_options(${CEF_TARGET} PRIVATE
+    "$<$<AND:$<CONFIG:Release>,$<BOOL:${CSE_RELEASE_DIAGNOSTICS}>>:/Zi>")
+  target_link_options(${CEF_TARGET} PRIVATE
+    "$<$<AND:$<CONFIG:Release>,$<BOOL:${CSE_RELEASE_DIAGNOSTICS}>>:/DEBUG:FULL>"
+    "$<$<AND:$<CONFIG:Release>,$<BOOL:${CSE_RELEASE_DIAGNOSTICS}>>:/OPT:REF>"
+    "$<$<AND:$<CONFIG:Release>,$<BOOL:${CSE_RELEASE_DIAGNOSTICS}>>:/OPT:ICF>")
 endif()
 target_link_libraries(${CEF_TARGET} PRIVATE libcef_dll_wrapper ${CEF_STANDARD_LIBS})
 target_compile_features(${CEF_TARGET} PRIVATE cxx_std_20)
